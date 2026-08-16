@@ -119,6 +119,11 @@ class MsgvaultClient:
         msg["body_format"] = last_format
         return msg
 
+    def search_message_bodies(self, query: str, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+        """Keyword search over message bodies (supports from:/subject: filters)."""
+        page = self._call_tool("search_message_bodies", {"query": query, "limit": limit, "offset": offset})
+        return page.get("data") or []
+
     def get_stats(self) -> dict[str, Any]:
         return self._call_tool("get_stats")
 
