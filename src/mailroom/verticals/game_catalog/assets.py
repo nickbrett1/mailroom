@@ -32,6 +32,14 @@ from mailroom.verticals.game_catalog.sources import RETAILER_SOURCES, parse_sour
 # Partitioned by day so incremental runs and backfills are per-slice.
 DAILY = DailyPartitionsDefinition(start_date="2024-01-01")
 
+# PSN receipt senders across the archive eras (verified 2026-08-16):
+# sony@… 2012→2022-12, reply@txn-email.playstation.com 2022-02→present.
+PSN_SENDERS = (
+    "sony@email.sonyentertainmentnetwork.com",
+    "email@email.playstation.com",
+    "reply@txn-email.playstation.com",
+)
+
 
 @asset(partitions_def=DAILY)
 def raw_psn_receipts(context: AssetExecutionContext) -> None:
@@ -40,12 +48,16 @@ def raw_psn_receipts(context: AssetExecutionContext) -> None:
     init_db(conn)
     cursor = get_cursor(conn, "psn_receipts") or ""
     client = context.resources.msgvault
-    messages = client.search_messages(
-        sender="sony@email.sonyentertainmentnetwork.com",
-        subject="Thank You For Your Purchase",
-        after=cursor or None,
-        limit=200,
-    )
+    messages: list[dict] = []
+    for sender in PSN_SENDERS:
+        messages += client.search_messages(
+            sender=sender,
+            subject="Thank You For Your Purchase",
+            after=cursor or None,
+            limit=200,
+        )
+    # Newest-first across senders; dedupe + sort by id desc for cursor semantics.
+    messages = sorted({int(m["id"]): m for m in messages}.values(), key=lambda m: -int(m["id"]))
     last = cursor
     for m in messages:
         # search_messages returns metadata only; fetch the full body per message.
