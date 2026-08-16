@@ -110,7 +110,13 @@ def parsed_purchases_digital(context: AssetExecutionContext) -> None:
 def raw_retailer_receipts(context: AssetExecutionContext) -> None:
     """Fetch new retailer order emails per source (senders + subject filter)
     since each source's cursor, and store raw (Best Buy: recover the web-view
-    HTML when the archived body is a stub)."""
+    HTML when the archived body is a stub).
+
+    OPS NOTE (Best Buy, memos/DyzFYeFbReur98cjCoLxCJ): msgvault rows ingested
+    before the HTML-supporting build have empty body_html even though the raw
+    MIME is archived. After the msgvault-side rederive (body_html populated),
+    reset the `raw_bestbuy` cursor (DELETE FROM cursors WHERE source =
+    'raw_bestbuy') and re-materialize so bodies are re-fetched with HTML."""
     conn = connect(context.resources.db_url)
     init_db(conn)
     client = context.resources.msgvault
