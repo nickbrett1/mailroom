@@ -36,7 +36,10 @@ class MsgvaultClient:
     _MAX_BODY_CHARS = 4000  # msgvault caps max_chars at 4000
     _MAX_BODY_BYTES = 2_000_000  # hard safety cap on paged body size
 
-    def __init__(self, base_url: str, token: str | None = None, timeout: float = 60.0, client: httpx.Client | None = None):
+    def __init__(self, base_url: str, token: str | None = None, timeout: float = 60.0, client: httpx.Client | None = None, retries: int = 3):
+        # msgvault is flaky under load (observed 2026-08-16) — retry transient
+        # internal-server errors with backoff.
+        self.retries = retries
         self.base_url = base_url.rstrip("/")
         headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
         if token:
@@ -50,11 +53,17 @@ class MsgvaultClient:
         payload: dict[str, Any] = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name}}
         if arguments:
             payload["params"]["arguments"] = arguments
-        resp = self._client.post(self.base_url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        if "error" in data:
-            raise RuntimeError(f"msgvault MCP error: {data['error']}")
+        for attempt in range(1, self.retries + 1):
+            resp = self._client.post(self.base_url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            if "error" not in data:
+                break
+            if attempt == self.retries:
+                raise RuntimeError(f"msgvault MCP error: {data['error']}")
+            time.sleep(1.5 * attempt)
+        else:  # pragma: no cover - loop always breaks or raises
+            raise RuntimeError("unreachable")
         result = data.get("result", {})
         content = result.get("content") or []
         for item in content:

@@ -1,8 +1,9 @@
 """game_catalog Dagster assets (thin shells over plain library functions).
 
 Chain: raw_psn_receipts → parsed_purchases_digital → classified_game_items
-→ owned_games → catalog_views. Future: retailer receipts, psn-api reconcile,
-IGDB match + metadata.
+→ owned_games → catalog_views, plus the physical chain raw_retailer_receipts
+→ parsed_purchases_physical feeding the same classified → owned_games.
+Future: psn-api reconcile, IGDB match + metadata.
 """
 
 from dagster import (
@@ -11,6 +12,7 @@ from dagster import (
     asset,
 )
 
+from mailroom.clients import recover_webview_html
 from mailroom.db import (
     connect,
     enqueue_review,
@@ -25,6 +27,7 @@ from mailroom.verticals.game_catalog.parsers.psn import (
     normalize_title,
     parse_psn_receipt,
 )
+from mailroom.verticals.game_catalog.sources import RETAILER_SOURCES, parse_source
 
 # Partitioned by day so incremental runs and backfills are per-slice.
 DAILY = DailyPartitionsDefinition(start_date="2024-01-01")
@@ -103,14 +106,122 @@ def parsed_purchases_digital(context: AssetExecutionContext) -> None:
     context.log.info(f"parsed {parsed} PSN receipts")
 
 
-@asset(partitions_def=DAILY, deps=[parsed_purchases_digital])
-def classified_game_items(context: AssetExecutionContext) -> None:
-    """Classify parsed items through the platform gate; ambiguous → review."""
+@asset
+def raw_retailer_receipts(context: AssetExecutionContext) -> None:
+    """Fetch new retailer order emails per source (senders + subject filter)
+    since each source's cursor, and store raw (Best Buy: recover the web-view
+    HTML when the archived body is a stub)."""
     conn = connect(context.resources.db_url)
     init_db(conn)
-    rows = conn.execute(
-        "SELECT * FROM parsed_purchases WHERE source = 'psn_receipt'"
-    ).fetchall()
+    client = context.resources.msgvault
+    for source in RETAILER_SOURCES:
+        cursor_key = f"raw_{source.name}"
+        cursor = get_cursor(conn, cursor_key) or ""
+        seen_max = int(cursor) if cursor.isdigit() else 0
+        for sender in source.senders:
+            messages = client.search_messages(sender=sender, after=cursor or None, limit=200)
+            for m in messages:
+                mid = int(m["id"])
+                seen_max = max(seen_max, mid)
+                subj = m.get("subject") or ""
+                if source.subject_contains and not any(s.lower() in subj.lower() for s in source.subject_contains):
+                    continue
+                detail = client.get_message(mid)
+                body = detail.get("body_text") or ""
+                body_html = detail.get("body_html") or ""
+                if source.body == "recover" and not body_html:
+                    body_html = recover_webview_html(body, client=client) or ""
+                upsert_raw_receipt(
+                    conn,
+                    {
+                        "message_id": str(mid),
+                        "source": source.name,
+                        "subject": subj,
+                        "sender": m.get("from_email") or sender,
+                        "received_at": detail.get("sent_at") or m.get("sent_at"),
+                        "body": body,
+                        "body_html": body_html,
+                    },
+                )
+        if seen_max:
+            set_cursor(conn, cursor_key, str(seen_max))
+    conn.close()
+
+
+@asset(deps=[raw_retailer_receipts])
+def parsed_purchases_physical(context: AssetExecutionContext) -> None:
+    """Parse stored retailer receipts into normalized purchases (one row per
+    line item, keyed (source, order_number, item_title); Mercari uses item_id).
+
+    Every line item is also retained in order_items so excluded titles are
+    never lost."""
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    rows = conn.execute("SELECT * FROM raw_receipts WHERE source != 'psn_receipt'").fetchall()
+    parsed = 0
+    for row in rows:
+        purchases = parse_source(
+            row["source"],
+            body=row["body"] or "",
+            body_html=row["body_html"] or "",
+            subject=row["subject"],
+            message_id=row["message_id"],
+        )
+        for purchase in purchases:
+            for i, item in enumerate(purchase.items):
+                if purchase.order_number:
+                    item_key = f"{purchase.order_number}:{item.title}"
+                else:
+                    item_key = f"item:{purchase.item_id or item.title}"
+                conn.execute(
+                    """INSERT INTO parsed_purchases
+                       (source, order_number, item_key, purchased_at, title, platform,
+                        price, qty, condition, message_id, raw_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(source, order_number, item_key) DO NOTHING""",
+                    (
+                        row["source"],
+                        purchase.order_number,
+                        item_key,
+                        purchase.purchased_at,
+                        item.title,
+                        item.platform_hint,
+                        item.price,
+                        item.qty,
+                        item.condition,
+                        purchase.message_id,
+                        str(purchase.as_dict()),
+                    ),
+                )
+                conn.execute(
+                    """INSERT INTO order_items
+                       (source, order_number, item_id, title, platform, price, qty, retailer, message_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        row["source"],
+                        purchase.order_number,
+                        purchase.item_id,
+                        item.title,
+                        item.platform_hint,
+                        item.price,
+                        item.qty,
+                        row["source"],
+                        purchase.message_id,
+                    ),
+                )
+            parsed += 1
+    conn.commit()
+    conn.close()
+    context.log.info(f"parsed {parsed} retailer receipts")
+
+
+@asset(partitions_def=DAILY, deps=[parsed_purchases_digital, parsed_purchases_physical])
+def classified_game_items(context: AssetExecutionContext) -> None:
+    """Classify parsed items (digital + physical) through the platform gate;
+    ambiguous → review queue."""
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    rows = conn.execute("SELECT * FROM parsed_purchases").fetchall()
     for row in rows:
         c = classify_item(row["title"], platform_hint=row["platform"])
         conn.execute(
@@ -146,14 +257,15 @@ def owned_games(context: AssetExecutionContext) -> None:
     ).fetchall()
     added = 0
     for row in rows:
+        is_digital = row["source"] == "psn_receipt"
         game_id = upsert_owned_game(
             conn,
             {
                 "title": row["title"],
                 "normalized_title": normalize_title(row["title"]),
                 "platform": row["platform"] or "playstation",
-                "format": "digital",
-                "retailer": None,
+                "format": "digital" if is_digital else "physical",
+                "retailer": None if is_digital else row["source"],
                 "order_number": row["order_number"],
                 "item_id": None,
                 "condition": None,

@@ -32,6 +32,7 @@ Has Been Delivered!" = no new facts. Heavily mixed catalog -> classifier gate.
 
 from __future__ import annotations
 
+import html as _html
 import re
 
 from mailroom.verticals.game_catalog.parsers.common import (
@@ -118,7 +119,7 @@ def _parse_items(region: str) -> list[PurchaseItem]:
         # the block lacked a terminator, so close it now.
         if cur is not None and cur.price is not None:
             items.append(cur)
-        title = line
+        title = _html.unescape(line)
         hint = None
         paren = re.search(r"\(([^)]+)\)\s*$", title)
         if paren and paren.group(1).strip().lower() in PLATFORM_TOKENS:
