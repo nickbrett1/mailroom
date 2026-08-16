@@ -53,6 +53,49 @@ def money(text: str) -> str | None:
     return m.group(0).replace(" ", "") if m else None
 
 
+# Platform tokens recognized on standalone variant lines / inline suffixes.
+PLATFORM_TOKENS = {
+    "ps4",
+    "ps5",
+    "psvita",
+    "vita",
+    "ps3",
+    "playstation 4",
+    "playstation 5",
+    "playstation",
+    "switch",
+    "nintendo switch",
+    "xbox",
+    "xbox series x",
+    "xbox series s",
+    "pc",
+    "steam",
+    "atari 2600",
+}
+
+
+def is_platform_token(line: str) -> str | None:
+    """Return the lowercased token if `line` is exactly a platform token."""
+    token = line.strip().lower()
+    return token if token in PLATFORM_TOKENS else None
+
+
+def strip_html(html: str) -> str:
+    """Convert HTML to text lines (best effort): drop scripts/styles/tags,
+    unescape entities, keep line breaks."""
+    import html as _html
+
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(
+        r"<br\s*/?>|<p[^>]*>|</p>|<tr[^>]*>|</tr>|<td[^>]*>|</td>|<th[^>]*>|</th>|<div[^>]*>|</div>|<li[^>]*>",
+        "\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"<[^>]+>", "", text)
+    return _html.unescape(text)
+
+
 def clean_whitespace(text: str) -> str:
     """Strip HTML-entity artifacts (&zwnj;, &nbsp;, zero-width space) and
     collapse horizontal whitespace. Newlines are preserved — parsers split

@@ -27,7 +27,13 @@ from __future__ import annotations
 
 import re
 
-from mailroom.verticals.game_catalog.parsers.common import Purchase, PurchaseItem, money
+from mailroom.verticals.game_catalog.parsers.common import (
+    PLATFORM_TOKENS,
+    Purchase,
+    PurchaseItem,
+    is_platform_token,
+    money,
+)
 
 _CONFIRM_MARKERS = ("thanks for your order", "order confirmed")
 _ORDER_RE = re.compile(r"Order\s*(?:Number|#)?\s*:?\s*#?(\d+)", re.IGNORECASE)
@@ -35,25 +41,6 @@ _DATE_RE = re.compile(
     r"(?:Order|Placed on|Date)[^:\n]*:\s*([A-Za-z]{3,9} \d{1,2},? \d{4}|\d{1,2}/\d{1,2}/\d{4})"
 )
 _QTY_RE = re.compile(r"(?:Qty|Quantity)\s*:?\s*(\d+)", re.IGNORECASE)
-
-PLATFORM_TOKENS = {
-    "ps4",
-    "ps5",
-    "psvita",
-    "vita",
-    "ps3",
-    "playstation 4",
-    "playstation 5",
-    "playstation",
-    "switch",
-    "nintendo switch",
-    "xbox",
-    "xbox series x",
-    "xbox series s",
-    "pc",
-    "steam",
-    "atari 2600",
-}
 
 _LABEL_LINES = (
     "subtotal",
@@ -87,11 +74,6 @@ _SKIP_LINES = ("http://", "https://", "www.", "tel:", "mailto:")
 _BULLETS = ("* ", "• ", "· ", "‣ ")
 
 
-def _is_platform_line(line: str) -> str | None:
-    token = line.strip().lower()
-    return token if token in PLATFORM_TOKENS else None
-
-
 def _parse_items(region: str) -> list[PurchaseItem]:
     items: list[PurchaseItem] = []
     cur: PurchaseItem | None = None
@@ -106,7 +88,7 @@ def _parse_items(region: str) -> list[PurchaseItem]:
         if qty_match and cur is not None:
             cur.qty = int(qty_match.group(1))
             continue
-        platform = _is_platform_line(line)
+        platform = is_platform_token(line)
         if platform and cur is not None:
             cur.platform_hint = platform
             continue
