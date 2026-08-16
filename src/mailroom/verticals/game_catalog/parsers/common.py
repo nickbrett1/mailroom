@@ -30,6 +30,8 @@ class Purchase:
     total: str | None = None
     message_id: str | None = None
     source: str = "receipt"
+    # Marketplace purchases key on the item ID (Mercari 'm…', eBay listing id).
+    item_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +43,7 @@ class Purchase:
             "tax": self.tax,
             "total": self.total,
             "message_id": self.message_id,
+            "item_id": self.item_id,
         }
 
 
