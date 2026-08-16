@@ -1,0 +1,40 @@
+# Node
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# SvelteKit
+.svelte-kit
+build
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Antigravity
+.antigravitycli
+
+# Optional
+
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv
+venv/
+*.manifest
+*.egg-info/
+
+# Dagster
+.tmp_dagster*
+
+
+
