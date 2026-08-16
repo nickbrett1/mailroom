@@ -12,40 +12,8 @@ Subtotal/Tax/Total. Wallet top-ups / non-(Game) items are skipped but logged.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any
 
-
-@dataclass
-class PurchaseItem:
-    title: str
-    price: str | None = None
-    platform_hint: str | None = None
-
-
-@dataclass
-class Purchase:
-    order_number: str
-    purchased_at: str | None
-    items: list[PurchaseItem] = field(default_factory=list)
-    subtotal: str | None = None
-    tax: str | None = None
-    total: str | None = None
-    message_id: str | None = None
-    source: str = "psn_receipt"
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "source": self.source,
-            "order_number": self.order_number,
-            "purchased_at": self.purchased_at,
-            "items": [item.__dict__ for item in self.items],
-            "subtotal": self.subtotal,
-            "tax": self.tax,
-            "total": self.total,
-            "message_id": self.message_id,
-        }
-
+from mailroom.verticals.game_catalog.parsers.common import Purchase, PurchaseItem
 
 _TEMPLATE_A = "A receipt of your purchase is below"
 _TEMPLATE_B = "Your PlayStation™Store transaction was successful"

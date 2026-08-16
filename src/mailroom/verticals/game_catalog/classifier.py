@@ -11,7 +11,18 @@ from dataclasses import dataclass
 
 PLAYSTATION_PLATFORMS = {"ps4", "ps5", "psvita", "vita", "ps3", "playstation"}
 NON_PLAYSTATION = {"switch", "xbox", "pc", "steam", "epic", "nintendo", "xbox series", "series x", "series s"}
-ACCESSORY_HINTS = ("cover plate", "controller", "dual sense", "dualsense", "headset", "charging", "stand")
+ACCESSORY_HINTS = (
+    "cover plate",
+    "controller",
+    "dual sense",
+    "dualsense",
+    "headset",
+    "charging",
+    "stand",
+    "console",  # console bundles ("PlayStation 5 Spider-Man Ultimate Edition Bundle")
+    "bundle",
+    "gift card",
+)
 
 
 @dataclass
