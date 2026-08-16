@@ -7,6 +7,8 @@ def test_definitions_load():
     assert {
         "raw_psn_receipts",
         "parsed_purchases_digital",
+        "raw_retailer_receipts",
+        "parsed_purchases_physical",
         "classified_game_items",
         "owned_games",
         "catalog_views",

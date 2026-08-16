@@ -74,6 +74,59 @@ def test_unrelated_body_returns_none():
     assert parse_bestbuy_receipt(body_text="some random email") is None
 
 
+TRACKING_GOD_OF_WAR = """
+Best Buy | We have your tracking number. | NES_SH_ReadyToShip
+
+Your package is prepped and ready to ship.
+
+We have your tracking number.
+
+Your package is prepped and ready for FedEx, and is scheduled to arrive on 12/19.
+
+Order number: 
+BBY01-807003276801
+
+Tracking Number: 
+433207095584
+
+View Order Details
+
+Your shipping info.
+
+Status
+
+Ready to ship
+
+https://click.emailinfo2.bestbuy.com/?qs=abc
+God of War III Remastered Standard Edition - PlayStation 4
+
+Get It By:
+
+Thursday, December 19
+
+Model #:3000925
+
+SKU:5607062
+
+Qty:1
+"""
+
+
+def test_tracking_email_fallback():
+    from mailroom.verticals.game_catalog.parsers.bestbuy import parse_bestbuy_tracking
+
+    p = parse_bestbuy_tracking(TRACKING_GOD_OF_WAR, message_id="25949")
+    assert p is not None
+    assert p.order_number == "BBY01-807003276801"
+    assert p.source == "bestbuy"
+    assert len(p.items) == 1
+    item = p.items[0]
+    assert item.title == "God of War III Remastered Standard Edition - PlayStation 4"
+    assert item.platform_hint == "playstation 4"
+    assert item.qty == 1
+    assert classify_item(item.title, platform_hint=item.platform_hint).classification == "playstation_game"
+
+
 def test_bby_alphanumeric_order_number():
     body = """Thanks for your order.
 

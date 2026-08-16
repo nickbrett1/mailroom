@@ -154,6 +154,52 @@ def _parse_items(text: str) -> list[PurchaseItem]:
     return items
 
 
+_TRACKING_ORDER_RE = re.compile(r"Order number:\s*\n?\s*(BBY\d{2}-\d+|\d{6,})", re.IGNORECASE)
+_TRACKING_ITEM_RE = re.compile(r"([^\n]+?)\s*\n\s*(?:Get It By:|Model #:)", re.IGNORECASE)
+_TRACKING_QTY_RE = re.compile(r"Qty:?\s*(\d+)", re.IGNORECASE)
+
+
+def parse_bestbuy_tracking(body_text: str, message_id: str | None = None) -> Purchase | None:
+    """Fallback for Best Buy when the confirmation is unrecoverable.
+
+    msgvault archives Best Buy confirmations as a stub (see module docstring),
+    and pre-2026 stubs carry only dead `view.` links. The tracking emails
+    ("We have your tracking number.") DO contain the order facts in text:
+
+        Order number: BBY01-807003276801
+        ...
+        God of War III Remastered Standard Edition - PlayStation 4
+        Get It By: Thursday, December 19
+        Model #:3000925 / SKU:5607062 / Qty:1
+
+    Tracking emails carry no price; they key on (order #, item) like
+    confirmations, so they dedupe cleanly once confirmations are recoverable.
+    """
+    low = body_text.lower()
+    if "tracking number" not in low and "tracking #" not in low:
+        return None
+    order_match = _TRACKING_ORDER_RE.search(body_text)
+    if not order_match:
+        return None
+    item_match = _TRACKING_ITEM_RE.search(body_text)
+    if not item_match:
+        return None
+    title = item_match.group(1).strip()
+    hint = None
+    if " - " in title:
+        maybe = title.rsplit(" - ", 1)[1].strip().lower()
+        if maybe in PLATFORM_TOKENS:
+            hint = maybe
+    qty_match = _TRACKING_QTY_RE.search(body_text)
+    return Purchase(
+        order_number=order_match.group(1),
+        purchased_at=None,
+        items=[PurchaseItem(title=title, platform_hint=hint, qty=int(qty_match.group(1)) if qty_match else 1)],
+        message_id=message_id,
+        source="bestbuy",
+    )
+
+
 def parse_bestbuy_receipt(
     body_text: str = "",
     body_html: str = "",

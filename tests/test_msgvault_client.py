@@ -141,7 +141,7 @@ def test_mcp_error_raises():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": "bad args"}})
 
-    client = MsgvaultClient("http://msgvault:8082/mcp", client=httpx.Client(base_url="http://msgvault:8082/mcp", transport=httpx.MockTransport(handler)))
+    client = MsgvaultClient("http://msgvault:8082/mcp", retries=1, client=httpx.Client(base_url="http://msgvault:8082/mcp", transport=httpx.MockTransport(handler)))
     with pytest.raises(RuntimeError, match="bad args"):
         client.get_stats()
 

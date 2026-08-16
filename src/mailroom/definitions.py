@@ -12,13 +12,17 @@ from mailroom.verticals.game_catalog.assets import (
     classified_game_items,
     owned_games,
     parsed_purchases_digital,
+    parsed_purchases_physical,
     raw_psn_receipts,
+    raw_retailer_receipts,
 )
 
 definitions = Definitions(
     assets=[
         raw_psn_receipts,
         parsed_purchases_digital,
+        raw_retailer_receipts,
+        parsed_purchases_physical,
         classified_game_items,
         owned_games,
         catalog_views,

@@ -45,12 +45,15 @@ def classify_item(title: str, platform_hint: str | None = None, variant: str | N
     text = f"{title} {platform_hint or ''} {variant or ''}".lower()
 
     # Accessory/hardware first — they often mention PlayStation.
-    if any(h in text for h in ACCESSORY_HINTS):
-        return Classification("accessory_hardware", reason="accessory/hardware hint")
+    # Word-boundary matching (optional plural) so 'stand' doesn't hit
+    # 'Standard Edition' or 'controller' miss 'controllers'.
+    for h in ACCESSORY_HINTS:
+        if re.search(rf"\b{re.escape(h)}s?\b", text):
+            return Classification("accessory_hardware", reason=f"accessory/hardware hint '{h}'")
 
     # Non-game merch (books, cards, soundtracks) — never catalogue.
     for h in NON_GAME_HINTS:
-        if h in text:
+        if re.search(rf"\b{re.escape(h)}s?\b", text):
             return Classification("needs_review", reason=f"non-game hint '{h}'")
 
     # Explicit non-PlayStation platform.
