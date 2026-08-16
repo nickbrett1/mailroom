@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any
 
@@ -132,6 +133,16 @@ class MsgvaultClient:
 
     # --- internals ---
 
+    def fetch_webview(self, url: str) -> str:
+        """Fetch a 'View as a Web page' URL (Best Buy etc.) with a browser UA.
+
+        click.emailinfo2.bestbuy.com 302-redirects to the real content on
+        view.emailinfo2.bestbuy.com, so redirects are followed.
+        """
+        resp = self._client.get(url, headers={"User-Agent": "Mozilla/5.0"}, follow_redirects=True)
+        resp.raise_for_status()
+        return resp.text
+
     def _page_cursor(
         self,
         tool: str,
@@ -171,6 +182,28 @@ class MsgvaultClient:
                 break
             page_offset += len(data)
         return out
+
+
+_WEBVIEW_CLICK_RE = re.compile(r"https?://click\.emailinfo2?\.bestbuy\.com/[^\s\r\n]+")
+_WEBVIEW_VIEW_RE = re.compile(r"https?://view\.emailinfo2?\.bestbuy\.com/[^\s\r\n]+")
+
+
+def recover_webview_html(body_text: str, client: MsgvaultClient | None = None) -> str | None:
+    """Best Buy bodies archive as a stub ('View as a Web page' + click link).
+
+    Fetch the web-view URL to recover the real HTML content (items, prices,
+    order number). Returns the fetched HTML or None when no recoverable URL.
+    """
+    # Prefer 'click.' links (they 302 to the real content); bare 'view.' links
+    # require a token and return a maintenance page.
+    m = _WEBVIEW_CLICK_RE.search(body_text) or _WEBVIEW_VIEW_RE.search(body_text)
+    if not m:
+        return None
+    client = client or MsgvaultClient("http://msgvault:8082/mcp")
+    try:
+        return client.fetch_webview(m.group(0))
+    except httpx.HTTPError:
+        return None
 
 
 class IgdbClient:
