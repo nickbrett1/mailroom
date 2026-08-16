@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from dagster import Definitions, asset
+from dagster import Definitions
 
 from mailroom.clients import igdb_resource, msgvault_resource
 from mailroom.verticals.game_catalog.assets import (
@@ -14,7 +14,6 @@ from mailroom.verticals.game_catalog.assets import (
     parsed_purchases_digital,
     raw_psn_receipts,
 )
-
 
 definitions = Definitions(
     assets=[

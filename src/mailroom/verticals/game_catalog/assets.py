@@ -5,8 +5,6 @@ Chain: raw_psn_receipts → parsed_purchases_digital → classified_game_items
 IGDB match + metadata.
 """
 
-from __future__ import annotations
-
 from dagster import (
     AssetExecutionContext,
     DailyPartitionsDefinition,
@@ -23,8 +21,10 @@ from mailroom.db import (
     upsert_raw_receipt,
 )
 from mailroom.verticals.game_catalog.classifier import classify_item
-from mailroom.verticals.game_catalog.parsers.psn import normalize_title, parse_psn_receipt
-
+from mailroom.verticals.game_catalog.parsers.psn import (
+    normalize_title,
+    parse_psn_receipt,
+)
 
 # Partitioned by day so incremental runs and backfills are per-slice.
 DAILY = DailyPartitionsDefinition(start_date="2024-01-01")

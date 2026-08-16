@@ -3,7 +3,6 @@ from mailroom.verticals.game_catalog.parsers.psn import (
     parse_psn_receipt,
 )
 
-
 TEMPLATE_A = """
 Transaction Receipt
 

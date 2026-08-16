@@ -13,25 +13,25 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
 class PurchaseItem:
     title: str
-    price: Optional[str] = None
-    platform_hint: Optional[str] = None
+    price: str | None = None
+    platform_hint: str | None = None
 
 
 @dataclass
 class Purchase:
     order_number: str
-    purchased_at: Optional[str]
+    purchased_at: str | None
     items: list[PurchaseItem] = field(default_factory=list)
-    subtotal: Optional[str] = None
-    tax: Optional[str] = None
-    total: Optional[str] = None
-    message_id: Optional[str] = None
+    subtotal: str | None = None
+    tax: str | None = None
+    total: str | None = None
+    message_id: str | None = None
     source: str = "psn_receipt"
 
     def as_dict(self) -> dict[str, Any]:
@@ -78,7 +78,9 @@ def _extract_items(section: str, template: str) -> list[PurchaseItem]:
             items.append(PurchaseItem(title=title.strip(), price=price))
     else:
         # Template B: items are 'Title (Game) $price' pairs, possibly on one
-        # line after 'Details Price'. Match non-greedily up to each price.
+        # line after the 'Details Price' header. Drop the header first, then
+        # match non-greedily up to each price.
+        section = re.sub(r"^Details\s*Price\s*", "", section, flags=re.IGNORECASE)
         pair_re = re.compile(
             r"(?P<title>[^$\n]+?\(Game\))\s*(?P<price>\$\d[\d,]*\.\d{2})"
         )
@@ -88,7 +90,7 @@ def _extract_items(section: str, template: str) -> list[PurchaseItem]:
     return items
 
 
-def parse_psn_receipt(body: str, message_id: Optional[str] = None) -> Optional[Purchase]:
+def parse_psn_receipt(body: str, message_id: str | None = None) -> Purchase | None:
     """Parse a PSN receipt text body into a Purchase, or None if unrecognized."""
     if _TEMPLATE_A in body:
         template = "A"
