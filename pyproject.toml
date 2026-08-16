@@ -1,21 +1,19 @@
 [project]
 name = "mailroom"
 version = "0.1.0"
-description = "A mailroom project generated with genproj"
+description = "Email → facts pipeline platform. Vertical #1: definitive PlayStation game catalog (owned_games store) from PSN + retailer receipts via msgvault, enriched with IGDB."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "dagster",
     "dagster-webserver",
     "httpx",
-    "dagster",
-    "dagster-webserver"
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.16.3"
+    "ruff>=0.4",
 ]
 
 [build-system]
