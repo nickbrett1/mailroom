@@ -31,7 +31,7 @@ from mailroom.verticals.game_catalog.parsers.common import (
     strip_html,
 )
 
-_ORDER_RE = re.compile(r"Order\s*(?:Number|#)?\s*:?\s*#?(\d+)", re.IGNORECASE)
+_ORDER_RE = re.compile(r"Order\s*(?:Number|#)?\s*:?\s*#?([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)", re.IGNORECASE)
 _DATE_RE = re.compile(
     r"(?:Order\s*Date|Date)[^:\n]*:\s*([A-Za-z]{3,9} \d{1,2},? \d{4}|\d{1,2}/\d{1,2}/\d{4})"
 )
@@ -116,9 +116,9 @@ def parse_bestbuy_receipt(
     items = _parse_items(text)
     if not items:
         return None
-    total_m = re.search(r"\bTotal\b[^\$\n]*(\$\d[\d,]*\.\d{2})", text, re.IGNORECASE)
-    subtotal_m = re.search(r"Subtotal[^\$\n]*(\$\d[\d,]*\.\d{2})", text, re.IGNORECASE)
-    tax_m = re.search(r"\bTax\b[^\$\n]*(\$\d[\d,]*\.\d{2})", text, re.IGNORECASE)
+    total_m = re.search(r"\bTotal\b(?! paid)\s*\n?\s*(\$\d[\d,]*\.\d{2})", text, re.IGNORECASE)
+    subtotal_m = re.search(r"Subtotal\s*\n?\s*(\$\d[\d,]*\.\d{2})", text, re.IGNORECASE)
+    tax_m = re.search(r"Tax\s*\n?\s*(\$\d[\d,]*\.\d{2})", text, re.IGNORECASE)
     return Purchase(
         order_number=order_match.group(1),
         purchased_at=date_match.group(1) if date_match else None,

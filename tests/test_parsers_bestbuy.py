@@ -72,3 +72,23 @@ def test_text_fallback_when_no_html():
 
 def test_unrelated_body_returns_none():
     assert parse_bestbuy_receipt(body_text="some random email") is None
+
+
+def test_bby_alphanumeric_order_number():
+    body = """Thanks for your order.
+
+Order Number: BBY01-807206150787
+Order Date: 11/14/2024
+
+DRAGON QUEST III HD-2D Remake - PlayStation 5
+Qty: 1
+$19.99
+
+Subtotal $19.99
+Total $21.49
+"""
+    p = parse_bestbuy_receipt(body_text=body, message_id="bb1")
+    assert p is not None
+    assert p.order_number == "BBY01-807206150787"
+    assert p.items[0].title == "DRAGON QUEST III HD-2D Remake - PlayStation 5"
+    assert p.items[0].price == "$19.99"
