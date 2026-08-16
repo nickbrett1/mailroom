@@ -112,4 +112,134 @@ def test_fulfilled_email_returns_none():
 
 
 def test_unrelated_body_returns_none():
-    assert parse_shopify_receipt("some random email") is None
+    assert parse_shopify_receipt(body_text="some random email") is None
+
+
+# --- Real bodies from the archive (msgvault 2026-08-16) ---
+
+LRG_SOHO_REAL = """Thank you for your purchase!
+
+*****************************************************************
+Limited Run SOHO 
+( https://limited-run-soho.myshopify.com )
+
+*****************************************************************
+
+Order #1005
+
+----------------------------
+Thank you for your purchase!
+----------------------------
+
+Visit our store 
+( https://limited-run-soho.myshopify.com )
+
+
+Order summary
+-------------
+
+Animal Well × 1
+
+PS5
+
+$39.99
+
+Gameplay Harmonies × 1
+
+$24.99
+
+Plumbers Don't Wear Ties × 1
+
+$19.99
+
+Subtotal
+
+$84.97
+
+Taxes
+
+$7.53
+
+Total
+
+$92.50 USD
+
+Total paid today
+
+$0.00 USD
+"""
+
+ATARI_REAL = """Thank you for your purchase!
+
+Atari®
+
+Order #165370
+
+----------------------------
+Thank you for your purchase!
+----------------------------
+
+We're getting your order ready and will send an email
+notification when it has shipped.
+
+View your order 
+( https://atari.com/orders/abc )
+
+Order summary
+-------------
+
+MY PLAY WATCH ARCADE SMARTWATCH BAND × 1
+
+Asteroids Arcade Watch Band
+
+39.99
+
+Subtotal
+
+39.99
+
+Shipping
+
+5.99
+
+Taxes
+
+$3.56
+
+Total
+
+$49.54
+"""
+
+
+def test_lrg_soho_real_receipt():
+    p = parse_shopify_receipt(body_text=LRG_SOHO_REAL, message_id="27053")
+    assert p is not None
+    assert p.order_number == "1005"
+    assert len(p.items) == 3
+    well, harmonies, _plumbers = p.items
+    assert well.title == "Animal Well"
+    assert well.platform_hint == "ps5"
+    assert well.price == "$39.99"
+    assert well.qty == 1
+    assert classify_item(well.title, platform_hint=well.platform_hint).classification == "playstation_game"
+    # Soundtrack / non-game -> excluded by the classifier.
+    assert classify_item(harmonies.title).classification == "needs_review"
+    assert p.subtotal == "$84.97"
+    assert p.tax == "$7.53"
+    assert p.total == "$92.50"
+
+
+def test_atari_real_receipt_bare_prices():
+    p = parse_shopify_receipt(body_text=ATARI_REAL, message_id="3850")
+    assert p is not None
+    assert p.order_number == "165370"
+    assert len(p.items) == 1
+    band = p.items[0]
+    # The sub-variant line ('Asteroids Arcade Watch Band') is absorbed into the
+    # item; bare '39.99' price is normalized to $.
+    assert band.title == "MY PLAY WATCH ARCADE SMARTWATCH BAND - Asteroids Arcade Watch Band"
+    assert band.price == "$39.99"
+    assert band.qty == 1
+    assert p.subtotal == "$39.99"
+    assert p.total == "$49.54"
