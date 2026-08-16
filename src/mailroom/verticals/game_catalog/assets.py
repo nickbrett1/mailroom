@@ -45,16 +45,18 @@ def raw_psn_receipts(context: AssetExecutionContext) -> None:
     )
     last = cursor
     for m in messages:
+        # search_messages returns metadata only; fetch the full body per message.
+        detail = client.get_message(int(m["id"]))
         upsert_raw_receipt(
             conn,
             {
-                "message_id": m["id"],
+                "message_id": str(m["id"]),
                 "source": "psn_receipt",
-                "subject": m.get("subject"),
-                "sender": m.get("from_email"),
-                "received_at": m.get("sent_at"),
-                "body": m.get("body"),
-                "body_html": m.get("body_html"),
+                "subject": detail.get("subject") or m.get("subject"),
+                "sender": detail.get("from_email") or m.get("from_email"),
+                "received_at": detail.get("sent_at") or m.get("sent_at"),
+                "body": detail.get("body_text") or "",
+                "body_html": detail.get("body_html") or "",
             },
         )
         last = str(m["id"])

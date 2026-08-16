@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Any
@@ -14,42 +15,157 @@ import httpx
 
 
 class MsgvaultClient:
-    """Thin client over the msgvault API.
+    """Client over the real msgvault endpoint (verified 2026-08-16).
 
-    Endpoints are shaped after the msgvault OpenAPI used in this environment
-    (search/filter messages by sender/subject, fetch body). Fill in the exact
-    routes when wiring against the real service; keep the cursor semantics here.
+    msgvault exposes its archive through a streamable-HTTP MCP server at
+    `<base_url>/mcp` (e.g. `http://msgvault:8082/mcp` on the NAS; reachable
+    from this devcontainer as `http://nas:8082/mcp`). There is no separate
+    REST OpenAPI on that port — the MCP JSON-RPC interface is the API.
+
+    This client speaks MCP JSON-RPC directly (initialize + tools/call) so the
+    pipeline does not depend on a running MCP client. It implements the
+    semantics the assets need:
+      - search_messages: sender/subject filters + cursor paging (newest-first,
+        skips ids <= cursor) via `list_messages` / `search_metadata`.
+      - get_message: fetches the FULL body by paging the API's body slice
+        window (max_chars/offset/has_more) and returns `body_text`/`body_html`.
+      - get_stats / get_attachment: thin wrappers for later use.
     """
 
-    def __init__(self, base_url: str, token: str | None = None):
+    _MAX_BODY_CHARS = 4000  # msgvault caps max_chars at 4000
+    _MAX_BODY_BYTES = 2_000_000  # hard safety cap on paged body size
+
+    def __init__(self, base_url: str, token: str | None = None, timeout: float = 60.0, client: httpx.Client | None = None):
         self.base_url = base_url.rstrip("/")
-        self._headers = {"Authorization": f"Bearer {token}"} if token else {}
-        self._client = httpx.Client(base_url=self.base_url, headers=self._headers, timeout=30.0)
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        self._client = client or httpx.Client(base_url=self.base_url, headers=headers, timeout=timeout)
+
+    # --- MCP transport ---
+
+    def _call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
+        """Invoke an MCP tool and unwrap its first text content (parsed as JSON)."""
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name}}
+        if arguments:
+            payload["params"]["arguments"] = arguments
+        resp = self._client.post(self.base_url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        if "error" in data:
+            raise RuntimeError(f"msgvault MCP error: {data['error']}")
+        result = data.get("result", {})
+        content = result.get("content") or []
+        for item in content:
+            if item.get("type") == "text":
+                text = item.get("text", "")
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return text
+        return result.get("structuredContent") or result
+
+    # --- public API (matches what the assets expect) ---
 
     def search_messages(
         self,
         sender: str | None = None,
         subject: str | None = None,
-        after: str | None = None,  # cursor (e.g. message id / received_at)
+        after: str | None = None,  # cursor: message id (int/str digits) or ISO date
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
-        if sender:
-            params["sender"] = sender
-        if subject:
-            params["q"] = subject
-        if after:
-            params["after"] = after
-        resp = self._client.get("/messages", params=params)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("messages", data if isinstance(data, list) else [])
+        """Find messages newest-first, optionally filtered by sender/subject.
 
-    def get_message(self, message_id: str) -> dict[str, Any]:
-        resp = self._client.get(f"/messages/{message_id}")
-        resp.raise_for_status()
-        return resp.json()
+        Cursor semantics: when `after` is a message id, paging stops as soon as
+        a message with id <= cursor is seen (ids are monotonic, results are
+        newest-first), so each run fetches only messages newer than the cursor.
+        """
+        if subject is not None:
+            query = f'from:{sender} ' if sender else ""
+            query += f'subject:"{subject}"'
+            return self._page_cursor("search_metadata", {"query": query}, after=after, limit=limit, offset=offset)
+
+        args: dict[str, Any] = {}
+        if sender:
+            args["from"] = sender
+        return self._page_cursor("list_messages", args, after=after, limit=limit, offset=offset)
+
+    def get_message(self, message_id: int, body_format: str = "auto") -> dict[str, Any]:
+        """Fetch one message with its FULL body (pages the slice window)."""
+        msg: dict[str, Any] = {}
+        text_chunks: list[str] = []
+        html_chunks: list[str] = []
+        offset = 0
+        last_format = "auto"
+        while True:
+            d = self._call_tool(
+                "get_message",
+                {"id": message_id, "body_format": body_format, "offset": offset, "max_chars": self._MAX_BODY_CHARS},
+            )
+            if not msg:
+                msg = {k: v for k, v in d.items() if k not in ("body_text", "body_html", "body_returned", "offset", "has_more")}
+            last_format = d.get("body_format") or last_format
+            text_chunks.append(d.get("body_text") or "")
+            html_chunks.append(d.get("body_html") or "")
+            returned = d.get("body_returned") or 0
+            if not d.get("has_more") or returned <= 0:
+                break
+            offset += returned
+            if offset > self._MAX_BODY_BYTES:
+                break
+        msg["body_text"] = "".join(text_chunks)
+        msg["body_html"] = "".join(html_chunks)
+        msg["body_format"] = last_format
+        return msg
+
+    def get_stats(self) -> dict[str, Any]:
+        return self._call_tool("get_stats")
+
+    def get_attachment(self, attachment_id: int) -> Any:
+        return self._call_tool("get_attachment", {"attachment_id": attachment_id})
+
+    # --- internals ---
+
+    def _page_cursor(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        after: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        """Page newest-first through a list/search tool, stopping at the cursor."""
+        cursor: int | None = None
+        date_after: str | None = None
+        if after is not None:
+            if isinstance(after, int) or str(after).isdigit():
+                cursor = int(after)
+            else:
+                date_after = after
+        if date_after:
+            args = {**args, "after": date_after}
+
+        out: list[dict[str, Any]] = []
+        remaining = limit
+        page_offset = offset
+        while remaining > 0:
+            page = self._call_tool(tool, {**args, "offset": page_offset, "limit": min(remaining, 100)})
+            data = page.get("data") or []
+            has_more = bool(page.get("has_more", False))
+            if not data:
+                break
+            for m in data:
+                if cursor is not None and int(m["id"]) <= cursor:
+                    return out  # reached the cursor; everything after is older
+                out.append(m)
+                remaining -= 1
+                if remaining <= 0:
+                    return out
+            if not has_more:
+                break
+            page_offset += len(data)
+        return out
 
 
 class IgdbClient:
@@ -117,8 +233,10 @@ from dagster import resource
 
 @resource
 def msgvault_resource(context) -> MsgvaultClient:  # type: ignore[no-untyped-def]
+    # MSGVAULT_URL points at the msgvault MCP endpoint, e.g.
+    # "http://msgvault:8082/mcp" on the NAS (see MsgvaultClient docstring).
     return MsgvaultClient(
-        base_url=os.environ.get("MSGVAULT_URL", "http://msgvault:8080"),
+        base_url=os.environ.get("MSGVAULT_URL", "http://msgvault:8082/mcp"),
         token=os.environ.get("MSGVAULT_TOKEN"),
     )
 
