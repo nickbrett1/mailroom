@@ -2,8 +2,8 @@ from mailroom.definitions import definitions
 
 
 def test_definitions_load():
-    graph = definitions.get_asset_graph()
-    keys = {k.to_user_string() for k in graph.all_asset_keys}
+    graph = definitions.resolve_asset_graph()
+    keys = {k.to_user_string() for k in graph.get_all_asset_keys()}
     assert {
         "raw_psn_receipts",
         "parsed_purchases_digital",
@@ -11,5 +11,6 @@ def test_definitions_load():
         "owned_games",
         "catalog_views",
     } <= keys
-    assert "msgvault" in definitions.get_resources()
-    assert "igdb" in definitions.get_resources()
+    resources = definitions.get_repository_def().get_top_level_resources()
+    assert "msgvault" in resources
+    assert "igdb" in resources

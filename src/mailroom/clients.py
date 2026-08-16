@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -21,16 +21,16 @@ class MsgvaultClient:
     routes when wiring against the real service; keep the cursor semantics here.
     """
 
-    def __init__(self, base_url: str, token: Optional[str] = None):
+    def __init__(self, base_url: str, token: str | None = None):
         self.base_url = base_url.rstrip("/")
         self._headers = {"Authorization": f"Bearer {token}"} if token else {}
         self._client = httpx.Client(base_url=self.base_url, headers=self._headers, timeout=30.0)
 
     def search_messages(
         self,
-        sender: Optional[str] = None,
-        subject: Optional[str] = None,
-        after: Optional[str] = None,  # cursor (e.g. message id / received_at)
+        sender: str | None = None,
+        subject: str | None = None,
+        after: str | None = None,  # cursor (e.g. message id / received_at)
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
@@ -63,7 +63,7 @@ class IgdbClient:
     def __init__(self, client_id: str, client_secret: str):
         self.client_id = client_id
         self.client_secret = client_secret
-        self._token: Optional[str] = None
+        self._token: str | None = None
         self._token_expires = 0.0
         self._min_interval = 0.3  # ~3.3 req/s, under the 4 req/s cap
         self._last_request = 0.0
@@ -101,7 +101,7 @@ class IgdbClient:
         resp.raise_for_status()
         return resp.json()
 
-    def game_by_external_psn_uid(self, psn_uid: str) -> Optional[int]:
+    def game_by_external_psn_uid(self, psn_uid: str) -> int | None:
         """Match a PSN content id / title id to an IGDB game id via external_games."""
         rows = self._apicalypse(
             "external_games",
@@ -112,7 +112,7 @@ class IgdbClient:
 
 # --- Dagster resources (thin wrappers over plain clients) ---
 
-from dagster import resource  # noqa: E402
+from dagster import resource
 
 
 @resource

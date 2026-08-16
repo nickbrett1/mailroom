@@ -12,8 +12,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from typing import Any, Optional
-
+from typing import Any
 
 DEFAULT_DB_PATH = os.environ.get("MAILROOM_DB", "/data/mailroom.db")
 
@@ -140,7 +139,7 @@ CREATE TABLE IF NOT EXISTS review_queue (
 """
 
 
-def connect(database_url: Optional[str] = None) -> sqlite3.Connection:
+def connect(database_url: str | None = None) -> sqlite3.Connection:
     """Open a SQLite connection, WAL mode, foreign keys on.
 
     DATABASE_URL-style: 'sqlite:///path/to.db' (default) or a bare path.
@@ -169,7 +168,7 @@ def init_db(conn: sqlite3.Connection) -> None:
 # --- thin repository helpers (the only place SQL lives) ---
 
 
-def get_cursor(conn: sqlite3.Connection, source: str) -> Optional[str]:
+def get_cursor(conn: sqlite3.Connection, source: str) -> str | None:
     row = conn.execute(
         "SELECT cursor_value FROM cursors WHERE source = ?", (source,)
     ).fetchone()

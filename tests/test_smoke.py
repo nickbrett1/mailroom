@@ -2,6 +2,6 @@
 
 
 def test_package_imports():
-    import mailroom  # noqa: F401
+    import mailroom
 
     assert mailroom.__version__

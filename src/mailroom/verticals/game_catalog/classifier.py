@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional
-
 
 PLAYSTATION_PLATFORMS = {"ps4", "ps5", "psvita", "vita", "ps3", "playstation"}
 NON_PLAYSTATION = {"switch", "xbox", "pc", "steam", "epic", "nintendo", "xbox series", "series x", "series s"}
@@ -19,11 +17,11 @@ ACCESSORY_HINTS = ("cover plate", "controller", "dual sense", "dualsense", "head
 @dataclass
 class Classification:
     classification: str  # playstation_game | non_playstation | accessory_hardware | needs_review
-    platform: Optional[str] = None
-    reason: Optional[str] = None
+    platform: str | None = None
+    reason: str | None = None
 
 
-def classify_item(title: str, platform_hint: Optional[str] = None, variant: Optional[str] = None) -> Classification:
+def classify_item(title: str, platform_hint: str | None = None, variant: str | None = None) -> Classification:
     """Classify a line item via the platform gate.
 
     Signals (strongest first): explicit platform_hint/variant (Shopify variant,
@@ -42,13 +40,14 @@ def classify_item(title: str, platform_hint: Optional[str] = None, variant: Opti
             return Classification("non_playstation", platform=p, reason=f"platform keyword '{p}'")
 
     # PlayStation detection: suffix ' - playstation 5', '(ps5)', 'for playstation', variant 'PS5'.
-    ps_match = re.search(r"(?:-|for)\s*(playstation\s*[45]|ps\s*[45]|psvita|vita|ps3)", text) or (
-        re.search(r"\(ps[45]\)", text)
-    )
+    ps_match = re.search(r"(?:-|for)\s*(playstation\s*[45]|ps\s*[45]|psvita|vita|ps3)", text)
+    paren_match = re.search(r"\(ps\s*([45])\)", text)
     if variant and variant.strip().upper() in {"PS4", "PS5", "PSVITA", "PS3", "VITA"}:
         return Classification("playstation_game", platform=variant.strip().upper(), reason="Shopify variant")
     if ps_match:
         return Classification("playstation_game", platform=ps_match.group(1), reason="platform match")
+    if paren_match:
+        return Classification("playstation_game", platform=f"playstation {paren_match.group(1)}", reason="parenthetical platform")
     if "playstation" in text or "ps4" in text or "ps5" in text:
         return Classification("playstation_game", platform="playstation", reason="keyword")
 
