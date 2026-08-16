@@ -16,15 +16,19 @@ import re
 from mailroom.verticals.game_catalog.parsers.common import Purchase, PurchaseItem
 
 _TEMPLATE_A = "A receipt of your purchase is below"
-_TEMPLATE_B = "Your PlayStation™Store transaction was successful"
-
+# Post-2022 sender (reply@txn-email.playstation.com) drops the ™: "Your
+# PlayStation Store transaction was successful". Accept both.
+_TEMPLATE_B_RE = re.compile(r"Your PlayStation(?:™)? ?Store transaction was successful", re.IGNORECASE)
+# A parenthetical that says "game" = a catalog game ("(Game)",
+# "(Downloadable Game)"). Add-Ons / wallet / subscriptions are skipped.
+_GAME_PAREN_RE = re.compile(r"\([^)]*game[^)]*\)", re.IGNORECASE)
 
 _PRICE_RE = re.compile(r"\$\d[\d,]*(?:\.\d{2})?")
 _ORDER_RE = re.compile(r"Order Number:\s*([\w-]+)", re.IGNORECASE)
 _DATE_RE = re.compile(r"Date Purchased:\s*([\d/]+)")
 _SUBTOTAL_RE = re.compile(r"Subtotal:\s*\$([\d,.]+)")
 _TAX_RE = re.compile(r"Tax:\s*\$([\d,.]+)")
-_TOTAL_RE = re.compile(r"Total:\s*\$([\d,.]+)", re.IGNORECASE)
+_TOTAL_RE = re.compile(r"\bTotal:\s*\$([\d,.]+)", re.IGNORECASE)
 
 
 def _strip_price(text: str) -> str:
@@ -39,8 +43,8 @@ def _extract_items(section: str, template: str) -> list[PurchaseItem]:
         prices = _PRICE_RE.findall(section)
         for i, title in enumerate(titles):
             title = title.strip().strip("*")
-            if "(Game)" not in title:
-                # wallet top-ups / subscriptions — not catalog games
+            if not _GAME_PAREN_RE.search(title):
+                # wallet top-ups / subscriptions / add-ons — not catalog games
                 continue
             price = prices[i] if i < len(prices) else None
             items.append(PurchaseItem(title=title.strip(), price=price))
@@ -50,7 +54,8 @@ def _extract_items(section: str, template: str) -> list[PurchaseItem]:
         # match non-greedily up to each price.
         section = re.sub(r"^Details\s*Price\s*", "", section, flags=re.IGNORECASE)
         pair_re = re.compile(
-            r"(?P<title>[^$\n]+?\(Game\))\s*(?P<price>\$\d[\d,]*\.\d{2})"
+            r"(?P<title>[^$\n]+?\([^)]*game[^)]*\))\s*(?P<price>\$\d[\d,]*\.\d{2})",
+            re.IGNORECASE,
         )
         for m in pair_re.finditer(section):
             title = _strip_price(m.group("title")).strip()
@@ -62,7 +67,7 @@ def parse_psn_receipt(body: str, message_id: str | None = None) -> Purchase | No
     """Parse a PSN receipt text body into a Purchase, or None if unrecognized."""
     if _TEMPLATE_A in body:
         template = "A"
-    elif _TEMPLATE_B in body:
+    elif _TEMPLATE_B_RE.search(body):
         template = "B"
     else:
         return None
@@ -92,6 +97,7 @@ def parse_psn_receipt(body: str, message_id: str | None = None) -> Purchase | No
         tax=_TAX_RE.search(body).group(1) if _TAX_RE.search(body) else None,
         total=_TOTAL_RE.search(body).group(1) if _TOTAL_RE.search(body) else None,
         message_id=message_id,
+        source="psn_receipt",
     )
 
 
