@@ -13,7 +13,7 @@ import json
 import httpx
 import pytest
 
-from mailroom.clients import MsgvaultClient
+from mailroom.clients import MsgvaultClient, recover_webview_html
 
 
 def _mcp_handler(responses: dict[str, object]):
@@ -144,3 +144,19 @@ def test_mcp_error_raises():
     client = MsgvaultClient("http://msgvault:8082/mcp", client=httpx.Client(base_url="http://msgvault:8082/mcp", transport=httpx.MockTransport(handler)))
     with pytest.raises(RuntimeError, match="bad args"):
         client.get_stats()
+
+
+def test_recover_webview_html_fetches_bestbuy_link():
+    html = "<html>DRAGON QUEST III HD-2D Remake - PlayStation 5</html>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html)
+
+    transport = httpx.MockTransport(handler)
+    client = MsgvaultClient("http://msgvault:8082/mcp", client=httpx.Client(base_url="http://msgvault:8082/mcp", transport=transport))
+    stub = "View as a Web page:\r\nhttps://click.emailinfo2.bestbuy.com/?qs=ABC123\r\n"
+    assert recover_webview_html(stub, client=client) == html
+
+
+def test_recover_webview_html_none_when_no_link():
+    assert recover_webview_html("no link here") is None
