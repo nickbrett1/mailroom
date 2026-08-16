@@ -23,6 +23,9 @@ ACCESSORY_HINTS = (
     "bundle",
     "gift card",
 )
+# Non-game merch (LRG books/magazines/trading cards/soundtracks) — retained raw,
+# never catalogued, sent to review rather than classified as hardware.
+NON_GAME_HINTS = ("trading card", "soundtrack", "vinyl", "art of", "art book", "strategy guide", "comic", "poster")
 
 
 @dataclass
@@ -44,6 +47,11 @@ def classify_item(title: str, platform_hint: str | None = None, variant: str | N
     # Accessory/hardware first — they often mention PlayStation.
     if any(h in text for h in ACCESSORY_HINTS):
         return Classification("accessory_hardware", reason="accessory/hardware hint")
+
+    # Non-game merch (books, cards, soundtracks) — never catalogue.
+    for h in NON_GAME_HINTS:
+        if h in text:
+            return Classification("needs_review", reason=f"non-game hint '{h}'")
 
     # Explicit non-PlayStation platform.
     for p in NON_PLAYSTATION:
