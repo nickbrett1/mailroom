@@ -22,7 +22,7 @@ from mailroom.db import (
     upsert_owned_game,
     upsert_raw_receipt,
 )
-from mailroom.verticals.game_catalog.classifier import classify_item
+from mailroom.verticals.game_catalog.classifier import Classification, classify_item
 from mailroom.verticals.game_catalog.parsers.psn import (
     normalize_title,
     parse_psn_receipt,
@@ -214,7 +214,8 @@ def parsed_purchases_physical(context: AssetExecutionContext) -> None:
                 conn.execute(
                     """INSERT INTO order_items
                        (source, order_number, item_id, title, platform, price, qty, retailer, message_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(source, order_number, item_id, title) DO NOTHING""",
                     (
                         row["source"],
                         purchase.order_number,
@@ -241,7 +242,13 @@ def classified_game_items(context: AssetExecutionContext) -> None:
     init_db(conn)
     rows = conn.execute("SELECT * FROM parsed_purchases").fetchall()
     for row in rows:
-        c = classify_item(row["title"], platform_hint=row["platform"])
+        if row["source"] == "psn_receipt":
+            # PSN receipts are PlayStation by definition — the store only sells
+            # PlayStation content. Title keywords ('steam', 'bundle', 'console',
+            # 'epic'…) must NOT reclassify them.
+            c = Classification("playstation_game", platform="playstation", reason="PSN receipt (platform implicit)")
+        else:
+            c = classify_item(row["title"], platform_hint=row["platform"])
         conn.execute(
             """INSERT INTO classified_game_items
                (source, order_number, item_key, title, platform, classification, reason)

@@ -67,9 +67,11 @@ CREATE TABLE IF NOT EXISTS order_items (
     retailer TEXT,
     message_id TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_order_items_unique
+    ON order_items(source, order_number, item_id, title);
 
 -- Classified line items: playstation_game / non_playstation /
--- accessory_hardware / needs_review.
+-- accessory_hardware / needs_review. Idempotent per (source, order, item).
 CREATE TABLE IF NOT EXISTS classified_game_items (
     id INTEGER PRIMARY KEY,
     source TEXT NOT NULL,
@@ -80,6 +82,8 @@ CREATE TABLE IF NOT EXISTS classified_game_items (
     classification TEXT NOT NULL,
     reason TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_classified_unique
+    ON classified_game_items(source, order_number, item_key);
 
 -- The store: definitive PlayStation catalog.
 CREATE TABLE IF NOT EXISTS owned_games (
@@ -136,6 +140,8 @@ CREATE TABLE IF NOT EXISTS review_queue (
     status TEXT DEFAULT 'open',
     created_at TEXT DEFAULT (datetime('now'))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_unique
+    ON review_queue(source, order_number, title, reason);
 """
 
 
@@ -239,7 +245,8 @@ def upsert_owned_game(conn: sqlite3.Connection, game: dict[str, Any]) -> int:
 def enqueue_review(conn: sqlite3.Connection, item: dict[str, Any]) -> None:
     conn.execute(
         """INSERT INTO review_queue(source, order_number, title, reason, payload)
-           VALUES (:source, :order_number, :title, :reason, :payload)""",
+           VALUES (:source, :order_number, :title, :reason, :payload)
+           ON CONFLICT(source, order_number, title, reason) DO NOTHING""",
         item,
     )
     conn.commit()
