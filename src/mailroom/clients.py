@@ -223,7 +223,8 @@ class PsnApiClient:
     psn-api projects); verify against a live token the first time.
     """
 
-    OAUTH_TOKEN_URL = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token"
+    OAUTH_TOKEN_URL = "https://ca.account.sony.com/api/authz/v3/oauth/token"
+    LEGACY_TOKEN_URL = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token"
     LIBRARY_URL = "https://m.np.playstation.com/api/gamelibrary/v1/users/me/titles"
     CLIENT_ID = "ac8b5cce-9d8f-4e49-9507-25b45e8a2c08"  # PS App OAuth client id
     SCOPE = "psn:mobile.v1 psn:oauth:refresh_token"
@@ -235,17 +236,9 @@ class PsnApiClient:
         self._client = client or httpx.Client(timeout=timeout, headers=headers)
 
     def _access_token(self) -> str:
-        resp = self._client.post(
-            self.OAUTH_TOKEN_URL,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": self.refresh_token or "",
-                "client_id": self.CLIENT_ID,
-                "scope": self.SCOPE,
-                "token_format": "jwt",
-                "redirect_uri": self.REDIRECT_URI,
-            },
-        )
+        resp = self._post_token(self.OAUTH_TOKEN_URL)
+        if resp.status_code in (404, 405):  # older accounts/regions: legacy endpoint
+            resp = self._post_token(self.LEGACY_TOKEN_URL)
         if resp.status_code in (400, 401):
             raise PsnAuthError(f"PSN refresh token rejected (HTTP {resp.status_code})")
         resp.raise_for_status()
@@ -254,6 +247,18 @@ class PsnApiClient:
         if not token:
             raise PsnAuthError("PSN token response missing access_token")
         return token
+
+    def _post_token(self, url: str) -> httpx.Response:
+        return self._client.post(
+            url,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": self.refresh_token or "",
+                "client_id": self.CLIENT_ID,
+                "scope": self.SCOPE,
+                "token_format": "jwt",
+            },
+        )
 
     def library_titles(self, limit: int = 500) -> list[dict[str, Any]]:
         """Full title-library pull (paginated)."""

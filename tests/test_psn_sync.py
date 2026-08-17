@@ -62,7 +62,7 @@ def test_library_titles_exchanges_token_and_paginates():
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/2.0/oauth/token":
+        if "oauth/token" in request.url.path:
             form = httpx.QueryParams(request.content.decode())
             assert form["grant_type"] == "refresh_token"
             assert form["refresh_token"] == "rt-123"
