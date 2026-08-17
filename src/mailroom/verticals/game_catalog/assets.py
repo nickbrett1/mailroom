@@ -167,14 +167,26 @@ def psn_api_owned(context: AssetExecutionContext) -> None:
         game = psn_library_item_to_game(raw)
         if not game:
             continue
+        # Merge into a DIGITAL row only (physical disc rows stay receipt-only):
+        # 1) by content id, 2) exact (normalized_title, platform), 3) generic
+        # platform receipt rows ("playstation") — backfill the concrete platform.
         exists = conn.execute(
-            "SELECT id FROM owned_games WHERE psn_content_id = ?", (game["psn_content_id"],)
+            """SELECT id, platform FROM owned_games
+               WHERE psn_content_id = ?
+                  OR (format = 'digital' AND normalized_title = ? AND platform = ?)
+                  OR (format = 'digital' AND normalized_title = ? AND platform = 'playstation')""",
+            (game["psn_content_id"], game["normalized_title"], game["platform"], game["normalized_title"]),
         ).fetchone()
-        upsert_owned_game(conn, game)
         if exists:
+            if exists["platform"] == "playstation" and game["platform"] != "playstation":
+                conn.execute(
+                    "UPDATE owned_games SET platform = ?, updated_at = datetime('now') WHERE id = ?",
+                    (game["platform"], exists["id"]),
+                )
             confirmed += 1
         else:
             added += 1
+        upsert_owned_game(conn, game)
     set_credential(conn, "psn", status="valid", last_success=datetime.now(UTC).isoformat(timespec="seconds"))
     conn.close()
     context.log.info(f"psn_api_owned: {added} added, {confirmed} confirmed/updated ({len(titles)} library items)")
