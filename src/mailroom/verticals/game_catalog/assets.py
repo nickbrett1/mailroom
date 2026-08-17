@@ -413,8 +413,10 @@ def igdb_search_term(title: str) -> str:
     t = re.sub(r"\([^)]*\)", " ", title)   # (PS5), (US), (Game)
     t = re.sub(r"\[[^\]]*\]", " ", t)      # [Devolver Deluxe]
     t = re.sub(r"[^\x00-\x7F]", " ", t)    # emoji / unicode listing junk
+    t = re.split(r"\s+w/", t)[0]           # drop eBay 'w/ <variant>' suffixes
     t = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45])\b", " ", t, flags=re.IGNORECASE)
-    t = re.sub(r"\b(?:a|an|the|and|for|of|on|with|w/|us|edition)\b", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b(?:a|an|the|and|for|of|on|with|us|edition)\b", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b(?:sealed|sony|new|brand new)\b", " ", t, flags=re.IGNORECASE)
     for w in _EDITION_WORDS:
         t = re.sub(rf"\b{re.escape(w)}\b", " ", t, flags=re.IGNORECASE)
     t = re.sub(r"\s+", " ", t).strip(" -–—:;").lower()
