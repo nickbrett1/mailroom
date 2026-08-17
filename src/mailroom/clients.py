@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import os
 import re
 import time
@@ -226,7 +225,10 @@ class PsnApiClient:
 
     OAUTH_TOKEN_URL = "https://ca.account.sony.com/api/authz/v3/oauth/token"
     LEGACY_TOKEN_URL = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token"
-    LIBRARY_URL = "https://m.np.playstation.com/api/gamelibrary/v1/users/me/titles"
+    # Current library/entitlements endpoint (verified live 2026-08-17; the old
+    # gamelibrary/v1/users/me/titles returns 403 with the PS App scope).
+    LIBRARY_URL = "https://m.np.playstation.com/api/entitlement/v2/users/me/internal/entitlements"
+    LIBRARY_FIELDS = "titleMeta,gameMeta,conceptMeta,rewardMeta,rewardMeta.retentionPolicy,rewardMeta.rewardMembershipType"
     # Public PS App OAuth client id (appears in the authorize URL; not secret).
     # The client SECRET is NOT stored in the repo — set env PSN_CLIENT_SECRET
     # (GitGuardian alert on c5f3de1; see memos/game-catalog-pipeline §PSN sync).
@@ -272,7 +274,12 @@ class PsnApiClient:
         )
 
     def library_titles(self, limit: int = 500) -> list[dict[str, Any]]:
-        """Full title-library pull (paginated)."""
+        """Full title-library (entitlements) pull, paginated.
+
+        Response: {totalResults, entitlements: [...]} — each entitlement has
+        id/productId (content id), gameMeta/titleMeta (name, packageType),
+        rewardMeta (PS+ signal: rewardMembershipType/rewardServiceType).
+        """
         token = self._access_token()
         out: list[dict[str, Any]] = []
         offset = 0
@@ -280,18 +287,24 @@ class PsnApiClient:
             resp = self._client.get(
                 self.LIBRARY_URL,
                 headers={"Authorization": f"Bearer {token}"},
-                params={"limit": min(limit, 500), "offset": offset},
+                params={
+                    "entitlementType": "1,2,3,4,5",
+                    "fields": self.LIBRARY_FIELDS,
+                    "gameMetaPackageType": "PSGD,PS4GD",
+                    "limit": min(limit, 500),
+                    "offset": offset,
+                },
             )
             if resp.status_code in (400, 401):
                 raise PsnAuthError(f"PSN library request rejected (HTTP {resp.status_code})")
             resp.raise_for_status()
             data = resp.json()
-            items = data.get("items") or []
+            items = data.get("entitlements") or []
             out.extend(items)
-            next_offset = data.get("nextOffset")
-            if next_offset is None or next_offset <= offset or not items:
+            total = data.get("totalResults") or 0
+            offset += len(items)
+            if not items or offset >= total:
                 break
-            offset = next_offset
         return out
 
 
@@ -314,41 +327,52 @@ def psn_basic_auth_header(client_secret: str | None = None) -> dict[str, str]:
 _PSPLUS_KEYS = ("psplus", "ps_plus", "ps plus", "playstation plus")
 
 
-def _item_is_psplus(item: dict[str, Any]) -> tuple[bool, str | None]:
-    """Best-effort PS+ classification from the library item.
+_PSPLUS_KEYS = ("psplus", "ps_plus", "ps plus", "playstation plus")
 
-    entitlementType / entitlementAttributes naming is community-documented —
-    TODO: verify against a live token and tighten the claimed-vs-extra split.
+# Non-game library entries (apps/streaming/services) — never catalogued.
+_APP_MARKERS = (
+    "netflix", "hulu", "disney+", "disney plus", "youtube", "spotify", "plex",
+    "crunchyroll", "amazon prime video", "apple tv", "skype", "twitch",
+    "playstation plus", "ps plus", "ps+", "sony pictures core", "d+",
+    "playstation stars", "playstation wrap",
+)
+
+
+def _item_is_psplus(item: dict[str, Any]) -> tuple[bool, str | None]:
+    """PS+ classification from the entitlement's rewardMeta.
+
+    Verified live 2026-08-17: purchased entries have
+    rewardMeta={rewardServiceType: 0, retentionPolicy: 0}; PS+ claims have
+    rewardMembershipType="PS_PLUS" / rewardServiceType=2 / retentionPolicy>0.
+    TODO: refine claimed-vs-extra (monthly vs catalog) once more samples are in.
     """
-    ent = item.get("entitlementType") or item.get("serviceType") or ""
-    attrs = item.get("entitlementAttributes") or item.get("attributes") or {}
-    blob = f"{ent} {json.dumps(attrs)}".lower()
-    for key in _PSPLUS_KEYS:
-        if key in blob:
-            return True, ("psplus_claimed" if any(t in blob for t in ("monthly", "essentials")) else "psplus_extra")
+    rm = item.get("rewardMeta") or {}
+    if rm.get("rewardMembershipType") == "PS_PLUS" or rm.get("rewardServiceType") == 2 or (rm.get("retentionPolicy") or 0) > 0:
+        return True, "psplus_claimed"
     return False, None
 
 
 def psn_library_item_to_game(item: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize a gamelibrary item into an owned_games row (digital)."""
-    name = item.get("name") or item.get("localizedName")
-    content_id = item.get("contentId") or item.get("id") or item.get("titleId")
+    """Normalize a PSN entitlement into an owned_games row (digital)."""
+    meta = item.get("gameMeta") or item.get("titleMeta") or item
+    name = meta.get("name") or item.get("name") or item.get("localizedName")
+    content_id = item.get("productId") or item.get("id") or item.get("titleId")
     if not name or not content_id:
         return None
-    category = str(item.get("category") or item.get("type") or "game").lower()
-    if category and category != "game":
-        return None  # add-ons / subscriptions / apps — keep the catalog to games
-    platform = item.get("platform") or item.get("platforms") or []
-    if isinstance(platform, str):
-        platform = [platform]
-    plat_txt = " ".join(str(p) for p in platform)
-    if re.search(r"ps5|playstation 5", plat_txt, re.IGNORECASE):
+    low = name.lower()
+    for marker in _APP_MARKERS:
+        if marker in low:
+            return None  # apps / subscriptions — keep the catalog to games
+    pkg = str(meta.get("type") or meta.get("packageType") or "")
+    # Verified live 2026-08-17: PS4GD = PS4 digital; PSGD = PS5 digital
+    # (samples: Marvel's Spider-Man Remastered, Maquette, Destruction AllStars).
+    if "PS5" in pkg.upper() or "PSGD" in pkg.upper():
         platform_name = "playstation 5"
-    elif re.search(r"ps4|playstation 4", plat_txt, re.IGNORECASE):
+    elif "PS4" in pkg.upper():
         platform_name = "playstation 4"
-    elif re.search(r"vita|psvita", plat_txt, re.IGNORECASE):
+    elif "VITA" in pkg.upper() or "PSV" in pkg.upper():
         platform_name = "ps vita"
-    elif re.search(r"ps3|playstation 3", plat_txt, re.IGNORECASE):
+    elif "PS3" in pkg.upper():
         platform_name = "playstation 3"
     else:
         platform_name = "playstation"
