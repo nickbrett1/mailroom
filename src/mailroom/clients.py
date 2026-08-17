@@ -6,11 +6,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import time
-from typing import Any, ClassVar
+from typing import Any
 
 import httpx
 
@@ -226,17 +227,17 @@ class PsnApiClient:
     OAUTH_TOKEN_URL = "https://ca.account.sony.com/api/authz/v3/oauth/token"
     LEGACY_TOKEN_URL = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token"
     LIBRARY_URL = "https://m.np.playstation.com/api/gamelibrary/v1/users/me/titles"
-    # Current PS App OAuth client (verified against isFakeAccount/psnawp 2026-08-12).
-    # client_id:secret base64'd is the Basic token header below.
+    # Public PS App OAuth client id (appears in the authorize URL; not secret).
+    # The client SECRET is NOT stored in the repo — set env PSN_CLIENT_SECRET
+    # (GitGuardian alert on c5f3de1; see memos/game-catalog-pipeline §PSN sync).
     CLIENT_ID = "09515159-7237-4370-9b40-3806e67c0891"
-    CLIENT_SECRET = "ucPjka5tntB2KqsP"
     SCOPE = "psn:mobile.v2.core psn:clientapp"
     REDIRECT_URI = "com.scee.psxandroid.scecompcall://redirect"
-    AUTH_HEADER: ClassVar[dict[str, str]] = {"Authorization": "Basic MDk1MTUxNTktNzIzNy00MzcwLTliNDAtMzgwNmU2N2MwODkxOnVjUGprYTV0bnRCMktxc1A="}
     USER_AGENT = "com.sony.snei.np.android.sso.share.oauth.versa.USER_AGENT"
 
-    def __init__(self, refresh_token: str | None = None, client: httpx.Client | None = None, timeout: float = 30.0):
+    def __init__(self, refresh_token: str | None = None, client: httpx.Client | None = None, timeout: float = 30.0, client_secret: str | None = None):
         self.refresh_token = refresh_token
+        self.client_secret = client_secret
         headers = {"Accept": "application/json", "Accept-Language": "en-US"}
         self._client = client or httpx.Client(timeout=timeout, headers=headers)
 
@@ -255,7 +256,7 @@ class PsnApiClient:
 
     def _post_token(self, url: str) -> httpx.Response:
         headers = {
-            **self.AUTH_HEADER,
+            **psn_basic_auth_header(self.client_secret),
             "Content-Type": "application/x-www-form-urlencoded",
             "User-Agent": self.USER_AGENT,
         }
@@ -292,6 +293,22 @@ class PsnApiClient:
                 break
             offset = next_offset
         return out
+
+
+def psn_basic_auth_header(client_secret: str | None = None) -> dict[str, str]:
+    """Basic auth header for the PS App OAuth client (client_id:secret).
+
+    The secret is NOT committed (GitGuardian alert on c5f3de1) — it comes from
+    env PSN_CLIENT_SECRET (or the constructor). Missing secret -> typed
+    PsnAuthError so the sync degrades to needs_refresh instead of crashing.
+    """
+    secret = client_secret or os.environ.get("PSN_CLIENT_SECRET")
+    if not secret:
+        raise PsnAuthError(
+            "PSN_CLIENT_SECRET is not set (PS App OAuth client secret — set it in env or the credentials table)"
+        )
+    raw = f"{PsnApiClient.CLIENT_ID}:{secret}"
+    return {"Authorization": "Basic " + base64.b64encode(raw.encode()).decode()}
 
 
 _PSPLUS_KEYS = ("psplus", "ps_plus", "ps plus", "playstation plus")
