@@ -353,7 +353,12 @@ def _item_is_psplus(item: dict[str, Any]) -> tuple[bool, str | None]:
 
 
 def psn_library_item_to_game(item: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize a PSN entitlement into an owned_games row (digital)."""
+    """Normalize a PSN entitlement into an owned_games row (digital).
+
+    normalized_title uses the same psn.normalize_title as the receipt parser so
+    API rows merge into receipt-derived rows (same game, same key)."""
+    from mailroom.verticals.game_catalog.parsers.psn import normalize_title
+
     meta = item.get("gameMeta") or item.get("titleMeta") or item
     name = meta.get("name") or item.get("name") or item.get("localizedName")
     content_id = item.get("productId") or item.get("id") or item.get("titleId")
@@ -379,7 +384,7 @@ def psn_library_item_to_game(item: dict[str, Any]) -> dict[str, Any] | None:
     is_plus, plus_class = _item_is_psplus(item)
     return {
         "title": name,
-        "normalized_title": re.sub(r"[^a-z0-9]+", "", name.lower()),
+        "normalized_title": normalize_title(name),
         "platform": platform_name,
         "format": "digital",
         "ownership_class": plus_class if is_plus else "purchased",

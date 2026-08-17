@@ -120,5 +120,6 @@ def normalize_title(title: str) -> str:
     t = title.strip()
     t = re.sub(r"\(Game\)", "", t, flags=re.IGNORECASE)
     t = re.sub(r"PlayStation®?\s*[45]", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"[–—]", "-", t)  # unify en/em dashes so titles match across sources
     t = re.sub(r"\s+", " ", t)
     return t.strip().lower()

@@ -200,17 +200,48 @@ def test_psn_api_owned_merges_and_marks_valid():
     conn = connect(f"sqlite:///{db}")
     init_db(conn)
     set_credential(conn, "psn", token="rt")
+    # Seed a RECEIPT-style digital row for the extra game (generic platform,
+    # punctuation-normalized title like the receipt parser produces) — the API
+    # item must merge into it (backfill content_id + concrete platform) rather
+    # than creating a duplicate.
+    from mailroom.db import upsert_owned_game
+
+    upsert_owned_game(
+        conn,
+        {
+            "title": "Some Extra Catalog Game",
+            "normalized_title": "some extra catalog game",
+            "platform": "playstation",
+            "format": "digital",
+            "ownership_class": "purchased",
+            "retailer": None,
+            "order_number": None,
+            "item_id": None,
+            "condition": None,
+            "psn_content_id": None,
+            "igdb_id": None,
+            "acquisition_date": None,
+            "price": None,
+            "source": "psn_receipt",
+            "source_ref": "order:1",
+            "status": "owned",
+            "is_owned": 1,
+            "provenance": "psn_receipt:order:1",
+        },
+    )
     ctx = _ctx(f"sqlite:///{db}", _StubPsn(LIB_ITEMS[:3]))
     assets.psn_api_owned(ctx)
     cred = get_credential(conn, "psn")
     assert cred["status"] == "valid"
     assert cred["last_success"]
     rows = {r["psn_content_id"]: r for r in conn.execute("SELECT * FROM owned_games").fetchall()}
-    assert len(rows) == 3  # add-on excluded
+    assert len(rows) == 3  # extra game merged into the seeded receipt row — no duplicate
     assert rows["UP9000-CUSA07408_00-00000000GODOFWAR"]["ownership_class"] == "purchased"
     assert rows["UP9000-CUSA00900_00-BLOODBORNE000000"]["ownership_class"] == "psplus_claimed"
     assert rows["UP9000-CUSA00900_00-BLOODBORNE000000"]["source"] == "ps_plus"
-    assert rows["UP9000-CUSA12345_00-SOMEEXTRAGAME"]["ownership_class"] == "psplus_claimed"
+    merged = rows["UP9000-CUSA12345_00-SOMEEXTRAGAME"]
+    assert merged["ownership_class"] == "psplus_claimed"
+    assert merged["platform"] == "playstation 5"  # concrete platform backfilled
     # idempotent: re-run adds nothing new
     assets.psn_api_owned(ctx)
     assert conn.execute("SELECT COUNT(*) n FROM owned_games").fetchone()["n"] == 3
