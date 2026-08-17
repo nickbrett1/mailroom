@@ -6,18 +6,27 @@ Chain: raw_psn_receipts → parsed_purchases_digital → classified_game_items
 Future: psn-api reconcile, IGDB match + metadata.
 """
 
+from datetime import UTC, datetime
+
+import httpx
 from dagster import (
     AssetExecutionContext,
     DailyPartitionsDefinition,
     asset,
 )
 
-from mailroom.clients import recover_webview_html
+from mailroom.clients import (
+    PsnAuthError,
+    psn_library_item_to_game,
+    recover_webview_html,
+)
 from mailroom.db import (
     connect,
     enqueue_review,
+    get_credential,
     get_cursor,
     init_db,
+    set_credential,
     set_cursor,
     upsert_owned_game,
     upsert_raw_receipt,
@@ -121,6 +130,54 @@ def parsed_purchases_digital(context: AssetExecutionContext) -> None:
     conn.commit()
     conn.close()
     context.log.info(f"parsed {parsed} PSN receipts")
+
+
+@asset
+def psn_api_owned(context: AssetExecutionContext) -> None:
+    """Weekly PSN full-library sync (PS App OAuth refresh token).
+
+    The ONLY record of PS+ claims (monthly + Extra/Premium generate zero
+    email). Full pull → idempotent merge keyed on psn_content_id → diff log.
+    Auth failures degrade to credentials.status = needs_refresh and the next
+    run does a full catch-up — never hard-fails (memos/game-catalog-pipeline
+    §PSN sync).
+    """
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    cred = get_credential(conn, "psn")
+    if not cred or not cred.get("token"):
+        set_credential(conn, "psn", status="needs_refresh", last_error="no refresh token stored")
+        context.log.warning("psn_api_owned: no PSN refresh token in credentials table — set one to enable the sync")
+        conn.close()
+        return
+    try:
+        titles = context.resources.psn_api.library_titles()
+    except PsnAuthError as exc:
+        set_credential(conn, "psn", status="needs_refresh", last_error=str(exc))
+        context.log.warning(f"psn_api_owned: auth degraded to needs_refresh ({exc}) — weekly retry will catch up")
+        conn.close()
+        return
+    except httpx.HTTPError as exc:  # transport failures are not auth — leave status alone
+        context.log.error(f"psn_api_owned: fetch failed: {exc}")
+        conn.close()
+        return
+
+    added = confirmed = 0
+    for raw in titles:
+        game = psn_library_item_to_game(raw)
+        if not game:
+            continue
+        exists = conn.execute(
+            "SELECT id FROM owned_games WHERE psn_content_id = ?", (game["psn_content_id"],)
+        ).fetchone()
+        upsert_owned_game(conn, game)
+        if exists:
+            confirmed += 1
+        else:
+            added += 1
+    set_credential(conn, "psn", status="valid", last_success=datetime.now(UTC).isoformat(timespec="seconds"))
+    conn.close()
+    context.log.info(f"psn_api_owned: {added} added, {confirmed} confirmed/updated ({len(titles)} library items)")
 
 
 @asset

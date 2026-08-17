@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -204,6 +205,144 @@ class IgdbClient:
         return rows[0]["game"] if rows else None
 
 
+class PsnAuthError(Exception):
+    """PSN auth rejected (refresh token invalid/expired) — degrade, never hard-fail."""
+
+
+class PsnApiClient:
+    """PS App OAuth + Game Library client (undocumented Sony endpoints).
+
+    Auth: a long-lived PS App OAuth **refresh token** (minted once via an
+    interactive 2FA login — the flow the PS+ auto-claim bots use) is exchanged
+    for a short-lived access token on every run, then the user's title library
+    is pulled. Credential lives in the `credentials` table (not .env); auth
+    failures raise PsnAuthError so the asset can flip `needs_refresh` and
+    retry on the weekly cadence (memos/game-catalog-pipeline §PSN sync).
+
+    Endpoints/field names are the community-documented ones (psnawp-api /
+    psn-api projects); verify against a live token the first time.
+    """
+
+    OAUTH_TOKEN_URL = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token"
+    LIBRARY_URL = "https://m.np.playstation.com/api/gamelibrary/v1/users/me/titles"
+    CLIENT_ID = "ac8b5cce-9d8f-4e49-9507-25b45e8a2c08"  # PS App OAuth client id
+    SCOPE = "psn:mobile.v1 psn:oauth:refresh_token"
+    REDIRECT_URI = "com.scee.psxandroid.scecomp008://redirect"
+
+    def __init__(self, refresh_token: str | None = None, client: httpx.Client | None = None, timeout: float = 30.0):
+        self.refresh_token = refresh_token
+        headers = {"Accept": "application/json", "Accept-Language": "en-US"}
+        self._client = client or httpx.Client(timeout=timeout, headers=headers)
+
+    def _access_token(self) -> str:
+        resp = self._client.post(
+            self.OAUTH_TOKEN_URL,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": self.refresh_token or "",
+                "client_id": self.CLIENT_ID,
+                "scope": self.SCOPE,
+                "token_format": "jwt",
+                "redirect_uri": self.REDIRECT_URI,
+            },
+        )
+        if resp.status_code in (400, 401):
+            raise PsnAuthError(f"PSN refresh token rejected (HTTP {resp.status_code})")
+        resp.raise_for_status()
+        data = resp.json()
+        token = data.get("access_token")
+        if not token:
+            raise PsnAuthError("PSN token response missing access_token")
+        return token
+
+    def library_titles(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Full title-library pull (paginated)."""
+        token = self._access_token()
+        out: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            resp = self._client.get(
+                self.LIBRARY_URL,
+                headers={"Authorization": f"Bearer {token}"},
+                params={"limit": min(limit, 500), "offset": offset},
+            )
+            if resp.status_code in (400, 401):
+                raise PsnAuthError(f"PSN library request rejected (HTTP {resp.status_code})")
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("items") or []
+            out.extend(items)
+            next_offset = data.get("nextOffset")
+            if next_offset is None or next_offset <= offset or not items:
+                break
+            offset = next_offset
+        return out
+
+
+_PSPLUS_KEYS = ("psplus", "ps_plus", "ps plus", "playstation plus")
+
+
+def _item_is_psplus(item: dict[str, Any]) -> tuple[bool, str | None]:
+    """Best-effort PS+ classification from the library item.
+
+    entitlementType / entitlementAttributes naming is community-documented —
+    TODO: verify against a live token and tighten the claimed-vs-extra split.
+    """
+    ent = item.get("entitlementType") or item.get("serviceType") or ""
+    attrs = item.get("entitlementAttributes") or item.get("attributes") or {}
+    blob = f"{ent} {json.dumps(attrs)}".lower()
+    for key in _PSPLUS_KEYS:
+        if key in blob:
+            return True, ("psplus_claimed" if any(t in blob for t in ("monthly", "essentials")) else "psplus_extra")
+    return False, None
+
+
+def psn_library_item_to_game(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize a gamelibrary item into an owned_games row (digital)."""
+    name = item.get("name") or item.get("localizedName")
+    content_id = item.get("contentId") or item.get("id") or item.get("titleId")
+    if not name or not content_id:
+        return None
+    category = str(item.get("category") or item.get("type") or "game").lower()
+    if category and category != "game":
+        return None  # add-ons / subscriptions / apps — keep the catalog to games
+    platform = item.get("platform") or item.get("platforms") or []
+    if isinstance(platform, str):
+        platform = [platform]
+    plat_txt = " ".join(str(p) for p in platform)
+    if re.search(r"ps5|playstation 5", plat_txt, re.IGNORECASE):
+        platform_name = "playstation 5"
+    elif re.search(r"ps4|playstation 4", plat_txt, re.IGNORECASE):
+        platform_name = "playstation 4"
+    elif re.search(r"vita|psvita", plat_txt, re.IGNORECASE):
+        platform_name = "ps vita"
+    elif re.search(r"ps3|playstation 3", plat_txt, re.IGNORECASE):
+        platform_name = "playstation 3"
+    else:
+        platform_name = "playstation"
+    is_plus, plus_class = _item_is_psplus(item)
+    return {
+        "title": name,
+        "normalized_title": re.sub(r"[^a-z0-9]+", "", name.lower()),
+        "platform": platform_name,
+        "format": "digital",
+        "ownership_class": plus_class if is_plus else "purchased",
+        "retailer": None,
+        "order_number": None,
+        "item_id": None,
+        "condition": None,
+        "psn_content_id": content_id,
+        "igdb_id": None,
+        "acquisition_date": None,
+        "price": None,
+        "source": "ps_plus" if is_plus else "psn_api",
+        "source_ref": content_id,
+        "status": "owned",
+        "is_owned": 1,
+        "provenance": f"psn_api:{content_id}",
+    }
+
+
 # --- Dagster resources (thin wrappers over plain clients) ---
 
 from dagster import resource
@@ -226,3 +365,19 @@ def igdb_resource(context) -> IgdbClient:  # type: ignore[no-untyped-def]
         client_id=os.environ.get("IGDB_CLIENT_ID", ""),
         client_secret=os.environ.get("IGDB_CLIENT_SECRET", ""),
     )
+
+
+@resource
+def psn_api_resource(context) -> PsnApiClient:  # type: ignore[no-untyped-def]
+    """PSN client built from the refresh token in the credentials table.
+
+    The token lives in the DB (memos/game-catalog-pipeline §PSN sync), not
+    .env — a UI refresh writes through mailroom without container edits.
+    """
+    from mailroom.db import connect, get_credential, init_db
+
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    cred = get_credential(conn, "psn") or {}
+    conn.close()
+    return PsnApiClient(refresh_token=cred.get("token"))
