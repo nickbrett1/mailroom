@@ -17,13 +17,22 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import urllib.parse
 import uuid
 import webbrowser
 
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:
+    # System python lacks the project deps — re-exec into the venv if present
+    # (e.g. `python3 scripts/psn_mint_token.py` on the devcontainer).
+    _venv_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv", "bin", "python3")
+    if os.path.exists(_venv_py):
+        os.execv(_venv_py, [_venv_py, *sys.argv])
+    raise
 
 from mailroom.clients import PsnApiClient
 
