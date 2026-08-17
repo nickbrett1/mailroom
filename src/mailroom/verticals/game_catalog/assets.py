@@ -412,7 +412,11 @@ def igdb_search_term(title: str) -> str:
     """Strip platform/edition/marketplace noise for an IGDB name search."""
     t = re.sub(r"\([^)]*\)", " ", title)   # (PS5), (US), (Game)
     t = re.sub(r"\[[^\]]*\]", " ", t)      # [Devolver Deluxe]
-    t = re.sub(r"[^\x00-\x7F]", " ", t)    # emoji / unicode listing junk
+    import unicodedata
+
+    t = unicodedata.normalize("NFKD", t)  # é -> e, û -> u (keeps accented titles searchable)
+    t = re.sub(r"[\u0300-\u036f]", "", t)  # combining marks
+    t = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u2300-\u23FF]", " ", t)  # emoji/dingbats
     t = re.split(r"\s+w/", t)[0]           # drop eBay 'w/ <variant>' suffixes
     t = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45])\b", " ", t, flags=re.IGNORECASE)
     t = re.sub(r"\b(?:a|an|the|and|for|of|on|with|us|edition)\b", " ", t, flags=re.IGNORECASE)

@@ -364,6 +364,9 @@ _APP_MARKERS = (
     "playstation plus", "ps plus", "ps+", "sony pictures core", "d+",
     "playstation stars", "playstation wrap",
 )
+# Content entitlements that are NOT games (word-bounded so 'demo' doesn't hit
+# Demon's Souls, 'ost' doesn't hit Lost, and Theme Hospital stays a game).
+_CONTENT_RE = re.compile(r"\b(?:demo|ost)\b|soundtrack|artbook|art book", re.IGNORECASE)
 
 
 def _item_is_psplus(item: dict[str, Any]) -> tuple[bool, str | None]:
@@ -396,6 +399,8 @@ def psn_library_item_to_game(item: dict[str, Any]) -> dict[str, Any] | None:
     for marker in _APP_MARKERS:
         if marker in low:
             return None  # apps / subscriptions — keep the catalog to games
+    if _CONTENT_RE.search(name):
+        return None  # demos / OSTs / artbooks — not games
     pkg = str(meta.get("type") or meta.get("packageType") or "")
     # Verified live 2026-08-17: PS4GD = PS4 digital; PSGD = PS5 digital
     # (samples: Marvel's Spider-Man Remastered, Maquette, Destruction AllStars).
