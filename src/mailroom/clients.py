@@ -10,7 +10,7 @@ import json
 import os
 import re
 import time
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -226,9 +226,14 @@ class PsnApiClient:
     OAUTH_TOKEN_URL = "https://ca.account.sony.com/api/authz/v3/oauth/token"
     LEGACY_TOKEN_URL = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token"
     LIBRARY_URL = "https://m.np.playstation.com/api/gamelibrary/v1/users/me/titles"
-    CLIENT_ID = "ac8b5cce-9d8f-4e49-9507-25b45e8a2c08"  # PS App OAuth client id
-    SCOPE = "psn:mobile.v1 psn:oauth:refresh_token"
-    REDIRECT_URI = "com.scee.psxandroid.scecomp008://redirect"
+    # Current PS App OAuth client (verified against isFakeAccount/psnawp 2026-08-12).
+    # client_id:secret base64'd is the Basic token header below.
+    CLIENT_ID = "09515159-7237-4370-9b40-3806e67c0891"
+    CLIENT_SECRET = "ucPjka5tntB2KqsP"
+    SCOPE = "psn:mobile.v2.core psn:clientapp"
+    REDIRECT_URI = "com.scee.psxandroid.scecompcall://redirect"
+    AUTH_HEADER: ClassVar[dict[str, str]] = {"Authorization": "Basic MDk1MTUxNTktNzIzNy00MzcwLTliNDAtMzgwNmU2N2MwODkxOnVjUGprYTV0bnRCMktxc1A="}
+    USER_AGENT = "com.sony.snei.np.android.sso.share.oauth.versa.USER_AGENT"
 
     def __init__(self, refresh_token: str | None = None, client: httpx.Client | None = None, timeout: float = 30.0):
         self.refresh_token = refresh_token
@@ -249,12 +254,17 @@ class PsnApiClient:
         return token
 
     def _post_token(self, url: str) -> httpx.Response:
+        headers = {
+            **self.AUTH_HEADER,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": self.USER_AGENT,
+        }
         return self._client.post(
             url,
+            headers=headers,
             data={
                 "grant_type": "refresh_token",
                 "refresh_token": self.refresh_token or "",
-                "client_id": self.CLIENT_ID,
                 "scope": self.SCOPE,
                 "token_format": "jwt",
             },
