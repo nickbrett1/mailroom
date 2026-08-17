@@ -16,8 +16,10 @@ from mailroom.verticals.game_catalog.parsers.bestbuy import (
     parse_bestbuy_receipt,
     parse_bestbuy_tracking,
 )
+from mailroom.verticals.game_catalog.parsers.cdkeys import parse_cdkeys_receipt
 from mailroom.verticals.game_catalog.parsers.common import Purchase
 from mailroom.verticals.game_catalog.parsers.ebay import parse_ebay_receipt
+from mailroom.verticals.game_catalog.parsers.gameflip import parse_gameflip_receipt
 from mailroom.verticals.game_catalog.parsers.gamefly import parse_gamefly_receipt
 from mailroom.verticals.game_catalog.parsers.gamestop import parse_gamestop_receipt
 from mailroom.verticals.game_catalog.parsers.mercari import parse_mercari_receipt
@@ -93,6 +95,18 @@ RETAILER_SOURCES: list[RetailerSource] = [
         parser=parse_ebay_receipt,
         subject_contains=["your order is confirmed"],
     ),
+    RetailerSource(
+        name="cdkeys",
+        senders=["support@cdkeys.com"],
+        parser=parse_cdkeys_receipt,
+        subject_contains=["Order"],
+    ),
+    RetailerSource(
+        name="gameflip",
+        senders=["no-reply@gameflip.com"],
+        parser=parse_gameflip_receipt,
+        subject_contains=["purchase of"],
+    ),
 ]
 
 _SOURCES_BY_NAME = {s.name: s for s in RETAILER_SOURCES}
@@ -113,6 +127,12 @@ def parse_source(
     """Dispatch a stored raw receipt to its source parser -> list[Purchase]."""
     if name == "amazon":
         return parse_amazon_receipt(body, message_id=message_id)
+    if name == "cdkeys":
+        p = parse_cdkeys_receipt(body, message_id=message_id)
+        return [p] if p else []
+    if name == "gameflip":
+        p = parse_gameflip_receipt(body, message_id=message_id)
+        return [p] if p else []
     if name == "mercari":
         p = parse_mercari_receipt(body, message_id=message_id, subject=subject)
         return [p] if p else []

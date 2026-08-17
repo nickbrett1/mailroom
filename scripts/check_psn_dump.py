@@ -81,10 +81,12 @@ def main() -> None:
     args = ap.parse_args()
 
     conn = connect(args.db)
+    # PlayStation digital content: Store receipts + code resellers.
     email_titles = {
         norm(r["title"])
         for r in conn.execute(
-            """SELECT title FROM parsed_purchases WHERE source='psn_receipt'"""
+            """SELECT title FROM parsed_purchases
+               WHERE source IN ('psn_receipt', 'cdkeys', 'gameflip')"""
         ).fetchall()
     }
     conn.close()

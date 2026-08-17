@@ -83,9 +83,12 @@ Qty:1
 """
 
 
-def test_registry_has_all_nine_sources():
+def test_registry_has_all_sources():
     names = {s.name for s in RETAILER_SOURCES}
-    assert names == {"gamestop", "amazon", "shopify", "bestbuy", "gamefly", "woot", "target", "mercari", "ebay"}
+    assert names == {
+        "gamestop", "amazon", "shopify", "bestbuy", "gamefly", "woot",
+        "target", "mercari", "ebay", "cdkeys", "gameflip",
+    }
     # Every source has at least one sender and a parser.
     for s in RETAILER_SOURCES:
         assert s.senders, s.name
