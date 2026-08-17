@@ -102,6 +102,61 @@ def exchange_code(code: str, client: httpx.Client | None = None) -> dict:
     return resp.json()
 
 
+def exchange_npsso(npsso: str, client: httpx.Client | None = None) -> dict:
+    """NPSSO-cookie flow -> tokens (what psnawp uses; no browser redirect).
+
+    The PS App's redirect_uri is a custom scheme that browsers can't complete
+    ('open another application' -> 'something went wrong'). Instead: send the
+    npsso cookie to the authorize endpoint with allow_redirects=False and read
+    the code from the Location header, then exchange it for tokens.
+    """
+    c = client or httpx.Client()
+    params = {
+        "access_type": "offline",
+        "cid": str(uuid.uuid4()),
+        "client_id": PsnApiClient.CLIENT_ID,
+        "device_base_font_size": "10",
+        "device_profile": "mobile",
+        "elements_visibility": "no_aclink",
+        "enable_scheme_error_code": "true",
+        "no_captcha": "true",
+        "PlatformPrivacyWs1": "minimal",
+        "redirect_uri": PsnApiClient.REDIRECT_URI,
+        "response_type": "code",
+        "scope": PsnApiClient.SCOPE,
+        "service_entity": "urn:service-entity:psn",
+        "service_logo": "ps",
+        "smcid": "psapp:signin",
+        "support_scheme": "sneiprls",
+        "turnOnTrustedBrowser": "true",
+        "ui": "pr",
+    }
+    headers = {
+        "Cookie": f"npsso={npsso}",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "com.scee.psxandroid",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-site",
+        "Sec-Fetch-User": "?1",
+    }
+    resp = c.get(
+        "https://ca.account.sony.com/api/authz/v3/oauth/authorize",
+        headers=headers,
+        params=params,
+        follow_redirects=False,
+    )
+    location = resp.headers.get("location", "")
+    m = re.search(r"code=([^&]+)", location)
+    if not m:
+        if "error_code" in location or "error" in location.lower():
+            raise RuntimeError(
+                f"authorize failed (NPSSO may be expired/incorrect): HTTP {resp.status_code} -> {location[:200]}"
+            )
+        raise RuntimeError(f"authorize returned no code in Location: HTTP {resp.status_code} -> {location[:200]}")
+    return exchange_code(m.group(1), client=c)
+
+
 def store_refresh_token(db_url: str, refresh_token: str) -> None:
     from mailroom.db import connect, init_db, set_credential
 
@@ -115,7 +170,32 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--store", metavar="DB", help="sqlite URL: store the refresh token in credentials (source='psn')")
     ap.add_argument("--verify", metavar="DB", help="sqlite URL: pull the library with the stored token (first-sweep check)")
+    ap.add_argument("--npsso", metavar="CODE", help="NPSSO cookie from https://ca.account.sony.com/api/v1/ssocookie — mints the refresh token server-side (no browser redirect); recommended over the browser flow")
     args = ap.parse_args()
+
+    if args.npsso:
+        print("Exchanging NPSSO for tokens…")
+        try:
+            tokens = exchange_npsso(args.npsso)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            print(f"NPSSO exchange failed: {exc}")
+            return 1
+        access = tokens.get("access_token")
+        refresh = tokens.get("refresh_token")
+        print(f"   access token:  {access[:24]}… ({tokens.get('expires_in')}s)" if access else "   access token: MISSING")
+        if not refresh:
+            print("   refresh token: MISSING — check the exchange response")
+            return 1
+        print(f"   refresh token: {refresh[:24]}… ({len(refresh)} chars)")
+        if args.store:
+            store_refresh_token(args.store, refresh)
+            print(f"   stored in credentials (source='psn', status=valid) at {args.store}")
+            print("   next: run --verify to do the first full-library sweep")
+        else:
+            print()
+            print("Refresh token (store it via --store <db>, or keep it somewhere safe):")
+            print(refresh)
+        return 0
 
     if args.verify:
         from mailroom.db import connect, get_credential, init_db
