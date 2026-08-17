@@ -33,11 +33,12 @@ from mailroom.verticals.game_catalog.sources import RETAILER_SOURCES, parse_sour
 DAILY = DailyPartitionsDefinition(start_date="2024-01-01")
 
 # PSN receipt senders across the archive eras (verified 2026-08-16):
-# sony@… 2012→2022-12, reply@txn-email.playstation.com 2022-02→present.
+# sony@… 2012→2022-12; reply@txn-email.playstation.com + sony@txn-email03… 2022→present.
 PSN_SENDERS = (
     "sony@email.sonyentertainmentnetwork.com",
     "email@email.playstation.com",
     "reply@txn-email.playstation.com",
+    "sony@txn-email03.playstation.com",
 )
 
 
