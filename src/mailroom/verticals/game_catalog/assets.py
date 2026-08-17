@@ -375,6 +375,7 @@ def owned_games(context: AssetExecutionContext) -> None:
                 "normalized_title": normalize_title(row["title"]),
                 "platform": row["platform"] or "playstation",
                 "format": "digital" if is_digital else "physical",
+                "ownership_class": "purchased",  # receipts = purchases; PS+ claims come via psn_api_owned
                 "retailer": None if is_digital else row["source"],
                 "order_number": row["order_number"],
                 "item_id": None,
