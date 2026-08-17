@@ -22,6 +22,12 @@ ACCESSORY_HINTS = (
     "console",  # console bundles ("PlayStation 5 Spider-Man Ultimate Edition Bundle")
     "bundle",
     "gift card",
+    # cables/connectors — titles advertise PS4/PS5 *compatibility*, not the platform
+    "cable",
+    "hdmi",
+    "ethernet",
+    "router",
+    "adapter",
 )
 # Non-game merch (LRG books/magazines/trading cards/soundtracks) — retained raw,
 # never catalogued, sent to review rather than classified as hardware.
