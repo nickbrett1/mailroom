@@ -174,5 +174,5 @@ def test_unrecognized_template_returns_none():
 def test_normalize_title():
     assert normalize_title("Wreckfest PlayStation®5 Version (Game)") == "wreckfest version"
     assert normalize_title("The Witcher 3: Wild Hunt – Complete Edition (Game)") == (
-        "the witcher 3: wild hunt – complete edition"
+        "the witcher 3: wild hunt - complete edition"  # en/em dashes unified
     )
