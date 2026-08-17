@@ -226,7 +226,7 @@ class IgdbClient:
         rows = self._apicalypse(
             "games",
             "fields id,name,slug,url,cover.url,genres.name,themes.name,game_modes.name,"
-            "perspectives.name,total_rating,aggregated_rating,first_release_date,"
+            "player_perspectives.name,total_rating,aggregated_rating,first_release_date,"
             "age_ratings.rating; "
             f"where id = {game_id}; limit 1;",
         )
