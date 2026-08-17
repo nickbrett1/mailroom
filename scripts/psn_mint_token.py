@@ -44,18 +44,29 @@ def authorize_url() -> str:
         "scope": PsnApiClient.SCOPE,
         "redirect_uri": PsnApiClient.REDIRECT_URI,
         "state": uuid.uuid4().hex,
-        "ui": "pr",
+        "access_type": "offline",
+        "cid": str(uuid.uuid4()),
+        "device_base_font_size": "10",
+        "device_profile": "mobile",
+        "elements_visibility": "no_aclink",
+        "enable_scheme_error_code": "true",
+        "no_captcha": "true",
+        "PlatformPrivacyWs1": "minimal",
         "service_entity": "urn:service-entity:psn",
-        "duid": str(uuid.uuid4()),
+        "service_logo": "ps",
+        "smcid": "psapp:signin",
+        "support_scheme": "sneiprls",
+        "turnOnTrustedBrowser": "true",
+        "ui": "pr",
     }
     return "https://ca.account.sony.com/api/authz/v3/oauth/authorize?" + urllib.parse.urlencode(params)
 
 
 def parse_redirect_url(url: str) -> tuple[str, str]:
     """Extract (code, state) from the pasted redirect URL."""
-    m = re.match(r"com\.scee\.psxandroid\.scecomp008://redirect\?(.*)", url, re.IGNORECASE)
+    m = re.match(r"com\.scee\.psxandroid\.scecomp(?:008|call)://redirect\?(.*)", url, re.IGNORECASE)
     if not m:
-        raise ValueError("URL must start with com.scee.psxandroid.scecomp008://redirect?")
+        raise ValueError("URL must start with com.scee.psxandroid.scecomp008://redirect? or …scecompcall://redirect?")
     qs = urllib.parse.parse_qs(m.group(1))
     code = (qs.get("code") or [""])[0]
     state = (qs.get("state") or [""])[0]
@@ -67,13 +78,18 @@ def parse_redirect_url(url: str) -> tuple[str, str]:
 def exchange_code(code: str, client: httpx.Client | None = None) -> dict:
     """authorization_code grant -> {access_token, refresh_token, expires_in}."""
     c = client or httpx.Client()
+    headers = {
+        **PsnApiClient.AUTH_HEADER,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": PsnApiClient.USER_AGENT,
+    }
     resp = c.post(
         PsnApiClient.OAUTH_TOKEN_URL,
+        headers=headers,
         data={
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": PsnApiClient.REDIRECT_URI,
-            "client_id": PsnApiClient.CLIENT_ID,
             "scope": PsnApiClient.SCOPE,
             "token_format": "jwt",
         },
