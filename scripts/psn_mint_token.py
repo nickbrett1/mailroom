@@ -77,9 +77,11 @@ def parse_redirect_url(url: str) -> tuple[str, str]:
 
 def exchange_code(code: str, client: httpx.Client | None = None) -> dict:
     """authorization_code grant -> {access_token, refresh_token, expires_in}."""
+    from mailroom.clients import psn_basic_auth_header
+
     c = client or httpx.Client()
     headers = {
-        **PsnApiClient.AUTH_HEADER,
+        **psn_basic_auth_header(),
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": PsnApiClient.USER_AGENT,
     }

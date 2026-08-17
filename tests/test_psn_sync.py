@@ -55,7 +55,7 @@ LIB_ITEMS = [
 
 def _psn_client(handler) -> PsnApiClient:
     transport = httpx.MockTransport(handler)
-    return PsnApiClient(refresh_token="rt-123", client=httpx.Client(transport=transport))
+    return PsnApiClient(refresh_token="rt-123", client_secret="test-secret", client=httpx.Client(transport=transport))
 
 
 def test_library_titles_exchanges_token_and_paginates():
@@ -86,6 +86,13 @@ def test_auth_error_typed():
 
     with pytest.raises(PsnAuthError):
         _psn_client(handler).library_titles()
+
+
+def test_missing_client_secret_degrades():
+    from mailroom.clients import psn_basic_auth_header
+
+    with pytest.raises(PsnAuthError):
+        psn_basic_auth_header()  # no env secret, none passed
 
 
 def test_library_item_normalization():
