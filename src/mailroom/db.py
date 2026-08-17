@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS owned_games (
     normalized_title TEXT,
     platform TEXT,
     format TEXT,                -- digital | physical
+    ownership_class TEXT DEFAULT 'purchased',  -- purchased | psplus_claimed | psplus_extra
     retailer TEXT,
     order_number TEXT,
     item_id TEXT,
@@ -127,6 +128,19 @@ CREATE TABLE IF NOT EXISTS game_metadata (
     igdb_id INTEGER PRIMARY KEY,
     payload TEXT,
     fetched_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Source authentication (PSN PS-App OAuth refresh token, future API sources).
+-- Token lives here (not .env) so a UI can refresh it without container edits.
+CREATE TABLE IF NOT EXISTS credentials (
+    source TEXT PRIMARY KEY,
+    token TEXT,
+    token_type TEXT,
+    expires_at TEXT,
+    last_success TEXT,
+    last_error TEXT,
+    status TEXT NOT NULL DEFAULT 'needs_refresh',  -- valid | needs_refresh
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Human review queue: ambiguous platform / unmatched / edge cases.
@@ -166,9 +180,17 @@ def connect(database_url: str | None = None) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create schema if not present."""
+    """Create schema if not present, plus lightweight column migrations."""
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive column migrations for databases created before a schema change."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(owned_games)").fetchall()}
+    if "ownership_class" not in cols:
+        conn.execute("ALTER TABLE owned_games ADD COLUMN ownership_class TEXT DEFAULT 'purchased'")
 
 
 # --- thin repository helpers (the only place SQL lives) ---
@@ -207,8 +229,9 @@ def upsert_raw_receipt(conn: sqlite3.Connection, receipt: dict[str, Any]) -> Non
 
 
 def upsert_owned_game(conn: sqlite3.Connection, game: dict[str, Any]) -> int:
-    """Upsert an owned game. Merge policy: receipts add, manual overrides win,
-    never silently delete (retire via is_owned=0 + reason in provenance)."""
+    """Upsert an owned game. Merge policy: receipts add, psn-api confirms /
+    adds claims, manual overrides win, never silently delete (retire via
+    is_owned=0 + reason in provenance)."""
     key = (game.get("psn_content_id") or "", game.get("normalized_title") or "", game.get("platform") or "")
     row = conn.execute(
         """SELECT id FROM owned_games
@@ -220,7 +243,10 @@ def upsert_owned_game(conn: sqlite3.Connection, game: dict[str, Any]) -> int:
             """UPDATE owned_games SET
                  title = :title, igdb_id = COALESCE(:igdb_id, igdb_id),
                  acquisition_date = COALESCE(:acquisition_date, acquisition_date),
-                 price = COALESCE(:price, price), provenance = :provenance,
+                 price = COALESCE(:price, price),
+                 ownership_class = COALESCE(:ownership_class, ownership_class),
+                 psn_content_id = COALESCE(:psn_content_id, psn_content_id),
+                 provenance = :provenance,
                  updated_at = datetime('now')
                WHERE id = :id""",
             {**game, "id": row["id"]},
@@ -229,17 +255,63 @@ def upsert_owned_game(conn: sqlite3.Connection, game: dict[str, Any]) -> int:
         return row["id"]
     cur = conn.execute(
         """INSERT INTO owned_games
-           (title, normalized_title, platform, format, retailer, order_number,
-            item_id, condition, psn_content_id, igdb_id, acquisition_date,
-            price, source, source_ref, status, is_owned, provenance)
-           VALUES (:title, :normalized_title, :platform, :format, :retailer,
-                   :order_number, :item_id, :condition, :psn_content_id,
+           (title, normalized_title, platform, format, ownership_class, retailer,
+            order_number, item_id, condition, psn_content_id, igdb_id,
+            acquisition_date, price, source, source_ref, status, is_owned, provenance)
+           VALUES (:title, :normalized_title, :platform, :format, :ownership_class,
+                   :retailer, :order_number, :item_id, :condition, :psn_content_id,
                    :igdb_id, :acquisition_date, :price, :source, :source_ref,
                    :status, :is_owned, :provenance)""",
         game,
     )
     conn.commit()
     return cur.lastrowid
+
+
+# --- credential lifecycle (PSN PS-App OAuth + future API sources) ---
+
+
+def get_credential(conn: sqlite3.Connection, source: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM credentials WHERE source = ?", (source,)).fetchone()
+    return dict(row) if row else None
+
+
+def set_credential(
+    conn: sqlite3.Connection,
+    source: str,
+    *,
+    token: str | None = None,
+    token_type: str | None = None,
+    expires_at: str | None = None,
+    status: str | None = None,
+    last_error: str | None = None,
+    last_success: str | None = None,
+) -> None:
+    """Upsert a source credential; None fields are left unchanged."""
+    cur = get_credential(conn, source) or {}
+    conn.execute(
+        """INSERT INTO credentials(source, token, token_type, expires_at, status, last_error, last_success, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+           ON CONFLICT(source) DO UPDATE SET
+             token = COALESCE(?, token),
+             token_type = COALESCE(?, token_type),
+             expires_at = COALESCE(?, expires_at),
+             status = COALESCE(?, status),
+             last_error = COALESCE(?, last_error),
+             last_success = COALESCE(?, last_success),
+             updated_at = datetime('now')""",
+        (
+            source,
+            token if token is not None else cur.get("token"),
+            token_type if token_type is not None else cur.get("token_type"),
+            expires_at if expires_at is not None else cur.get("expires_at"),
+            status if status is not None else cur.get("status", "needs_refresh"),
+            last_error if last_error is not None else cur.get("last_error"),
+            last_success if last_success is not None else cur.get("last_success"),
+            token, token_type, expires_at, status, last_error, last_success,
+        ),
+    )
+    conn.commit()
 
 
 def enqueue_review(conn: sqlite3.Connection, item: dict[str, Any]) -> None:
