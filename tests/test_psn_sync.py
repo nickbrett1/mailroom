@@ -113,9 +113,15 @@ def test_exchange_npsso_flow():
         assert "oauth/token" in request.url.path
         return httpx.Response(200, json={"access_token": "at", "refresh_token": "rt", "expires_in": 3600})
 
-    transport = httpx.MockTransport(handler)
-    tokens = mint.exchange_npsso("abc123", client=httpx.Client(transport=transport))
-    assert tokens["refresh_token"] == "rt"
+    import os
+
+    os.environ["PSN_CLIENT_SECRET"] = "test-secret"
+    try:
+        transport = httpx.MockTransport(handler)
+        tokens = mint.exchange_npsso("abc123", client=httpx.Client(transport=transport))
+        assert tokens["refresh_token"] == "rt"
+    finally:
+        os.environ.pop("PSN_CLIENT_SECRET", None)
 
 
 def test_library_item_normalization():
