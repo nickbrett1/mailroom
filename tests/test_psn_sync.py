@@ -95,6 +95,29 @@ def test_missing_client_secret_degrades():
         psn_basic_auth_header()  # no env secret, none passed
 
 
+def test_exchange_npsso_flow():
+    """NPSSO -> authorize Location code -> token exchange (no browser redirect)."""
+    import importlib.util
+    from pathlib import Path
+
+    _spec = importlib.util.spec_from_file_location("psn_mint_token", Path(__file__).parent.parent / "scripts" / "psn_mint_token.py")
+    mint = importlib.util.module_from_spec(_spec)
+    assert _spec.loader is not None
+    _spec.loader.exec_module(mint)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth/authorize" in request.url.path:
+            assert "npsso=abc123" in request.headers.get("Cookie", "")
+            assert request.url.params["response_type"] == "code"
+            return httpx.Response(302, headers={"location": f"{mint.PsnApiClient.REDIRECT_URI}?code=AUTHCODE1"})
+        assert "oauth/token" in request.url.path
+        return httpx.Response(200, json={"access_token": "at", "refresh_token": "rt", "expires_in": 3600})
+
+    transport = httpx.MockTransport(handler)
+    tokens = mint.exchange_npsso("abc123", client=httpx.Client(transport=transport))
+    assert tokens["refresh_token"] == "rt"
+
+
 def test_library_item_normalization():
     game = psn_library_item_to_game(LIB_ITEMS[0])
     assert game["psn_content_id"] == "UP9000-CUSA07408_00-00000000GODOFWAR"
