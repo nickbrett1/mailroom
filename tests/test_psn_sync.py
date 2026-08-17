@@ -136,6 +136,13 @@ def test_library_item_normalization():
     assert extra["platform"] == "playstation 5"
 
     assert psn_library_item_to_game(LIB_ITEMS[3]) is None  # app skipped
+    # content entitlements (demos/OST/artbooks) excluded, but word-bounded:
+    from mailroom.clients import psn_library_item_to_game as _to_game
+
+    assert _to_game({"id": "UP1", "productId": "UP1", "gameMeta": {"name": "FINAL FANTASY XVI DEMO", "type": "PS4GD"}, "rewardMeta": {"rewardServiceType": 0}}) is None
+    assert _to_game({"id": "UP2", "productId": "UP2", "gameMeta": {"name": "Horizon Zero Dawn Artbook", "type": "PS4GD"}, "rewardMeta": {"rewardServiceType": 0}}) is None
+    assert _to_game({"id": "UP3", "productId": "UP3", "gameMeta": {"name": "Demon's Souls", "type": "PSGD"}, "rewardMeta": {"rewardServiceType": 0}}) is not None  # 'demo' must NOT hit Demon's
+    assert _to_game({"id": "UP4", "productId": "UP4", "gameMeta": {"name": "Theme Hospital", "type": "PS4GD"}, "rewardMeta": {"rewardServiceType": 0}}) is not None  # not an artbook/theme
 
 
 def test_credential_helpers_and_owned_games_migration():
