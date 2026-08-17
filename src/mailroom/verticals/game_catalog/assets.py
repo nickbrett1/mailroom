@@ -41,6 +41,10 @@ PSN_SENDERS = (
     "sony@txn-email03.playstation.com",
 )
 
+# Sources that produce DIGITAL games (PlayStation Store receipts + code
+# resellers). Everything else is physical.
+DIGITAL_SOURCES = {"psn_receipt", "cdkeys", "gameflip"}
+
 
 @asset(partitions_def=DAILY)
 def raw_psn_receipts(context: AssetExecutionContext) -> None:
@@ -283,7 +287,9 @@ def owned_games(context: AssetExecutionContext) -> None:
     ).fetchall()
     added = 0
     for row in rows:
-        is_digital = row["source"] == "psn_receipt"
+        # psn_receipt = PlayStation Store; cdkeys/gameflip = digital key codes —
+        # all digital games. Everything else is physical.
+        is_digital = row["source"] in DIGITAL_SOURCES
         game_id = upsert_owned_game(
             conn,
             {
