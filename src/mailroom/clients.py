@@ -204,6 +204,29 @@ class IgdbClient:
         )
         return rows[0]["game"] if rows else None
 
+    # IGDB platform ids: 7 PS1 · 8 PS2 · 9 PS3 · 38 PSP · 46 Vita · 48 PS4 · 167 PS5
+    PS_PLATFORM_IDS = (7, 8, 9, 38, 46, 48, 167)
+
+    def search_game(self, name: str) -> list[dict[str, Any]]:
+        """Search IGDB games by name, preferring PlayStation platforms."""
+        rows = self._apicalypse(
+            "games",
+            f'fields id,name,platforms,first_release_date; search "{name}"; limit 10;',
+        )
+        ps = [r for r in rows if any(p in (r.get("platforms") or []) for p in self.PS_PLATFORM_IDS)]
+        return ps or rows
+
+    def game_details(self, game_id: int) -> dict[str, Any]:
+        """Fetch metadata for one game (covers, genres, themes, rating, release)."""
+        rows = self._apicalypse(
+            "games",
+            "fields id,name,slug,url,cover.url,genres.name,themes.name,game_modes.name,"
+            "perspectives.name,total_rating,aggregated_rating,first_release_date,"
+            "age_ratings.rating; "
+            f"where id = {game_id}; limit 1;",
+        )
+        return rows[0] if rows else {}
+
 
 class PsnAuthError(Exception):
     """PSN auth rejected (refresh token invalid/expired) — degrade, never hard-fail."""

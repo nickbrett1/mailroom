@@ -130,6 +130,29 @@ CREATE TABLE IF NOT EXISTS game_metadata (
     fetched_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Read model for the catalog site / MCP (owned games + IGDB enrichment).
+CREATE VIEW IF NOT EXISTS catalog_views AS
+SELECT
+    g.id AS game_id,
+    g.title,
+    g.normalized_title,
+    g.platform,
+    g.format,
+    g.ownership_class,
+    g.retailer,
+    g.order_number,
+    g.psn_content_id,
+    g.igdb_id,
+    g.acquisition_date,
+    g.price,
+    g.source,
+    g.is_owned,
+    g.provenance,
+    m.payload AS igdb_payload
+FROM owned_games g
+LEFT JOIN game_metadata m ON m.igdb_id = g.igdb_id
+WHERE g.is_owned = 1;
+
 -- Source authentication (PSN PS-App OAuth refresh token, future API sources).
 -- Token lives here (not .env) so a UI can refresh it without container edits.
 CREATE TABLE IF NOT EXISTS credentials (
