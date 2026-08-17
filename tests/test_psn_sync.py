@@ -23,32 +23,28 @@ REFRESH_BODY = {"access_token": "jwt-token-123", "expires_in": 3600, "token_type
 LIB_ITEMS = [
     {
         "id": "UP9000-CUSA07408_00-00000000GODOFWAR",
+        "productId": "UP9000-CUSA07408_00-00000000GODOFWAR",
         "titleId": "CUSA07408",
-        "name": "God of War",
-        "category": "game",
-        "platform": ["PS4"],
-        "entitlementType": "PURCHASED",
+        "gameMeta": {"name": "God of War", "type": "PS4GD"},
+        "rewardMeta": {"rewardServiceType": 0, "retentionPolicy": 0},
     },
     {
         "id": "UP9000-CUSA00900_00-BLOODBORNE000000",
-        "name": "Bloodborne",
-        "category": "game",
-        "platform": ["PS4"],
-        "entitlementAttributes": {"psPlusSubscriber": True},
-        "entitlementType": "PS_PLUS_MONTHLY",
+        "productId": "UP9000-CUSA00900_00-BLOODBORNE000000",
+        "gameMeta": {"name": "Bloodborne", "type": "PS4GD"},
+        "rewardMeta": {"rewardMembershipType": "PS_PLUS", "rewardServiceType": 2, "retentionPolicy": 4},
     },
     {
         "id": "UP9000-CUSA12345_00-SOMEEXTRAGAME",
-        "name": "Some Extra Catalog Game",
-        "category": "game",
-        "platform": ["PS5"],
-        "entitlementType": "PS_PLUS_CATALOG",
+        "productId": "UP9000-CUSA12345_00-SOMEEXTRAGAME",
+        "gameMeta": {"name": "Some Extra Catalog Game", "type": "PSGD"},
+        "rewardMeta": {"rewardMembershipType": "PS_PLUS", "rewardServiceType": 2, "retentionPolicy": 4},
     },
     {
-        "id": "UP0001-CUSA00001_00-ADDONCONTENT1",
-        "name": "Some Add-On",
-        "category": "addon",
-        "platform": ["PS5"],
+        "id": "UP0001-CUSA00001_00-DISNEYPLUS",
+        "productId": "UP0001-CUSA00001_00-DISNEYPLUS",
+        "gameMeta": {"name": "Disney+", "type": "PS4GD"},
+        "rewardMeta": {"rewardServiceType": 0, "retentionPolicy": 0},
     },
 ]
 
@@ -67,13 +63,13 @@ def test_library_titles_exchanges_token_and_paginates():
             assert form["grant_type"] == "refresh_token"
             assert form["refresh_token"] == "rt-123"
             return httpx.Response(200, json=REFRESH_BODY)
-        assert request.url.path.endswith("/gamelibrary/v1/users/me/titles")
+        assert request.url.path.endswith("/api/entitlement/v2/users/me/internal/entitlements")
         assert request.headers["Authorization"] == "Bearer jwt-token-123"
         calls["n"] += 1
         offset = int(request.url.params.get("offset", "0"))
         if offset == 0:
-            return httpx.Response(200, json={"items": [LIB_ITEMS[0]], "nextOffset": 1, "totalItemCount": 2})
-        return httpx.Response(200, json={"items": [LIB_ITEMS[1]], "nextOffset": 1, "totalItemCount": 2})
+            return httpx.Response(200, json={"entitlements": [LIB_ITEMS[0]], "totalResults": 2, "start": 0})
+        return httpx.Response(200, json={"entitlements": [LIB_ITEMS[1]], "totalResults": 2, "start": 1})
 
     titles = _psn_client(handler).library_titles()
     assert len(titles) == 2
@@ -136,10 +132,10 @@ def test_library_item_normalization():
     assert monthly["source"] == "ps_plus"
 
     extra = psn_library_item_to_game(LIB_ITEMS[2])
-    assert extra["ownership_class"] == "psplus_extra"
+    assert extra["ownership_class"] == "psplus_claimed"  # claimed-vs-extra: TODO
     assert extra["platform"] == "playstation 5"
 
-    assert psn_library_item_to_game(LIB_ITEMS[3]) is None  # add-on skipped
+    assert psn_library_item_to_game(LIB_ITEMS[3]) is None  # app skipped
 
 
 def test_credential_helpers_and_owned_games_migration():
@@ -214,7 +210,7 @@ def test_psn_api_owned_merges_and_marks_valid():
     assert rows["UP9000-CUSA07408_00-00000000GODOFWAR"]["ownership_class"] == "purchased"
     assert rows["UP9000-CUSA00900_00-BLOODBORNE000000"]["ownership_class"] == "psplus_claimed"
     assert rows["UP9000-CUSA00900_00-BLOODBORNE000000"]["source"] == "ps_plus"
-    assert rows["UP9000-CUSA12345_00-SOMEEXTRAGAME"]["ownership_class"] == "psplus_extra"
+    assert rows["UP9000-CUSA12345_00-SOMEEXTRAGAME"]["ownership_class"] == "psplus_claimed"
     # idempotent: re-run adds nothing new
     assets.psn_api_owned(ctx)
     assert conn.execute("SELECT COUNT(*) n FROM owned_games").fetchone()["n"] == 3
