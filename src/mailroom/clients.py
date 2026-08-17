@@ -197,10 +197,15 @@ class IgdbClient:
         return resp.json()
 
     def game_by_external_psn_uid(self, psn_uid: str) -> int | None:
-        """Match a PSN content id / title id to an IGDB game id via external_games."""
+        """Match a PSN content id / title id to an IGDB game id via external_games.
+
+        NOTE (verified 2026-08-17): IGDB's external_games has ~no PlayStation
+        Network entries (category 18 is empty; 0/30 sampled content-ids match),
+        so this is a rare fallback, not the primary digital path.
+        """
         rows = self._apicalypse(
             "external_games",
-            f'fields game,uid; where uid = "{psn_uid}" & category = 1; limit 1;',
+            f'fields game,uid; where uid = "{psn_uid}" & category = 18; limit 1;',
         )
         return rows[0]["game"] if rows else None
 

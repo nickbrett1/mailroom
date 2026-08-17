@@ -427,9 +427,10 @@ def igdb_search_term(title: str) -> str:
 def igdb_matches(context: AssetExecutionContext) -> None:
     """Match owned games to IGDB ids (paced).
 
-    Digital: psn_content_id -> external_games (high confidence). Physical /
-    fallback: name search after stripping platform/edition words (medium).
-    Target <5% unmatched.
+    Name search after stripping platform/edition words (medium confidence) for
+    ALL rows — IGDB external_games has ~no PSN entries (verified 2026-08-17),
+    so the psn_content_id -> external_games lookup is only a last-resort
+    fallback when search finds nothing. Target <5% unmatched.
     """
     conn = connect(context.resources.db_url)
     init_db(conn)
@@ -438,15 +439,14 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     matched = unmatched = 0
     for row in rows:
         gid, matched_title, method = None, None, None
-        if row["psn_content_id"]:
+        results = igdb.search_game(igdb_search_term(row["title"]))
+        if results:
+            gid = results[0]["id"]
+            matched_title = results[0].get("name")
+            method = "search"
+        if not gid and row["psn_content_id"]:
             gid = igdb.game_by_external_psn_uid(row["psn_content_id"])
             method = "external_games"
-        if not gid:
-            results = igdb.search_game(igdb_search_term(row["title"]))
-            if results:
-                gid = results[0]["id"]
-                matched_title = results[0].get("name")
-                method = "search"
         if gid:
             conn.execute(
                 """INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title)
