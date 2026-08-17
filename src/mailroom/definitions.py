@@ -1,4 +1,5 @@
-"""Dagster definitions for mailroom (single code location, all verticals)."""
+"""Definitions: add the IGDB enrichment assets (igdb_matches, game_metadata,
+catalog_views) alongside the existing chains."""
 
 from __future__ import annotations
 
@@ -10,6 +11,8 @@ from mailroom.clients import igdb_resource, msgvault_resource, psn_api_resource
 from mailroom.verticals.game_catalog.assets import (
     catalog_views,
     classified_game_items,
+    game_metadata,
+    igdb_matches,
     owned_games,
     parsed_purchases_digital,
     parsed_purchases_physical,
@@ -38,6 +41,8 @@ definitions = Definitions(
         classified_game_items,
         owned_games,
         psn_api_owned,
+        igdb_matches,
+        game_metadata,
         catalog_views,
     ],
     resources={

@@ -2,10 +2,13 @@
 
 Chain: raw_psn_receipts → parsed_purchases_digital → classified_game_items
 → owned_games → catalog_views, plus the physical chain raw_retailer_receipts
-→ parsed_purchases_physical feeding the same classified → owned_games.
-Future: psn-api reconcile, IGDB match + metadata.
+→ parsed_purchases_physical feeding the same classified → owned_games, plus
+psn_api_owned (recurring PSN sync) and the IGDB enrichment chain
+igdb_matches → game_metadata → catalog_views.
 """
 
+import json
+import re
 from datetime import UTC, datetime
 
 import httpx
@@ -396,11 +399,99 @@ def owned_games(context: AssetExecutionContext) -> None:
     context.log.info(f"owned_games: {added} rows upserted")
 
 
+_EDITION_WORDS = (
+    "standard edition", "deluxe edition", "ultimate edition", "launch edition",
+    "collector's edition", "collectors edition", "game of the year edition",
+    "special edition", "complete edition", "definitive edition", "day 1 edition",
+    "cross-gen", "digital edition", "premium edition", "anniversary edition",
+    "monarch edition", "exclusive", "goty", "remastered", "remake",
+)
+
+
+def igdb_search_term(title: str) -> str:
+    """Strip platform/edition/marketplace noise for an IGDB name search."""
+    t = re.sub(r"\([^)]*\)", " ", title)   # (PS5), (US), (Game)
+    t = re.sub(r"\[[^\]]*\]", " ", t)      # [Devolver Deluxe]
+    t = re.sub(r"[^\x00-\x7F]", " ", t)    # emoji / unicode listing junk
+    t = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45])\b", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b(?:a|an|the|and|for|of|on|with|w/|us|edition)\b", " ", t, flags=re.IGNORECASE)
+    for w in _EDITION_WORDS:
+        t = re.sub(rf"\b{re.escape(w)}\b", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s+", " ", t).strip(" -–—:;").lower()
+    return t[:80] or title[:80].lower()
+
+
 @asset(deps=[owned_games])
-def catalog_views(context: AssetExecutionContext) -> None:
-    """Read models for the site/MCP (counts for now)."""
+def igdb_matches(context: AssetExecutionContext) -> None:
+    """Match owned games to IGDB ids (paced).
+
+    Digital: psn_content_id -> external_games (high confidence). Physical /
+    fallback: name search after stripping platform/edition words (medium).
+    Target <5% unmatched.
+    """
     conn = connect(context.resources.db_url)
     init_db(conn)
-    total = conn.execute("SELECT COUNT(*) AS n FROM owned_games WHERE is_owned = 1").fetchone()["n"]
-    context.log.info(f"catalog_views: {total} owned games")
+    igdb = context.resources.igdb
+    rows = conn.execute("SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id IS NULL").fetchall()
+    matched = unmatched = 0
+    for row in rows:
+        gid, matched_title, method = None, None, None
+        if row["psn_content_id"]:
+            gid = igdb.game_by_external_psn_uid(row["psn_content_id"])
+            method = "external_games"
+        if not gid:
+            results = igdb.search_game(igdb_search_term(row["title"]))
+            if results:
+                gid = results[0]["id"]
+                matched_title = results[0].get("name")
+                method = "search"
+        if gid:
+            conn.execute(
+                """INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title)
+                   VALUES (?, ?, ?, ?)""",
+                (row["id"], gid, "high" if method == "external_games" else "medium", matched_title),
+            )
+            conn.execute("UPDATE owned_games SET igdb_id = ? WHERE id = ?", (gid, row["id"]))
+            matched += 1
+        else:
+            unmatched += 1
+    conn.commit()
     conn.close()
+    context.log.info(f"igdb_matches: {matched} matched, {unmatched} unmatched")
+
+
+@asset(deps=[igdb_matches])
+def game_metadata(context: AssetExecutionContext) -> None:
+    """IGDB details per matched game (covers/genres/rating/release). Paced,
+    resumable (skips ids already fetched); on-demand only, not scheduled."""
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    igdb = context.resources.igdb
+    rows = conn.execute(
+        """SELECT DISTINCT igdb_id FROM owned_games
+           WHERE igdb_id IS NOT NULL
+             AND igdb_id NOT IN (SELECT igdb_id FROM game_metadata)"""
+    ).fetchall()
+    fetched = 0
+    for r in rows:
+        payload = igdb.game_details(r["igdb_id"])
+        if payload:
+            conn.execute(
+                "INSERT OR REPLACE INTO game_metadata(igdb_id, payload) VALUES (?, ?)",
+                (r["igdb_id"], json.dumps(payload)),
+            )
+            fetched += 1
+    conn.commit()
+    conn.close()
+    context.log.info(f"game_metadata: fetched {fetched}")
+
+
+@asset(deps=[game_metadata])
+def catalog_views(context: AssetExecutionContext) -> None:
+    """Read model for the site/MCP — a VIEW created by init_db over
+    owned_games LEFT JOIN game_metadata. Materializing ensures it exists."""
+    conn = connect(context.resources.db_url)
+    init_db(conn)  # creates/recreates the catalog_views view
+    conn.close()
+    context.log.info("catalog_views: view ensured")
+
