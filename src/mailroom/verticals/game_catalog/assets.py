@@ -162,6 +162,15 @@ def psn_api_owned(context: AssetExecutionContext) -> None:
         conn.close()
         return
 
+    # One-time re-normalization for rows written before dashes were unified
+    # (normalize_title now maps en/em dashes -> hyphen) so they match API rows.
+    conn.execute(
+        """UPDATE owned_games
+           SET normalized_title = replace(replace(normalized_title, '–', '-'), '—', '-')
+           WHERE normalized_title LIKE '%–%' OR normalized_title LIKE '%—%'"""
+    )
+    conn.commit()
+
     added = confirmed = 0
     for raw in titles:
         game = psn_library_item_to_game(raw)
