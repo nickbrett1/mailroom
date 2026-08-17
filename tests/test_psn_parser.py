@@ -129,6 +129,44 @@ def test_parse_template_b_new_sender_no_trademark():
     assert p.total == "44.60"
 
 
+# 2012-era Template A: bare items (no asterisks), no Subtotal line, table date.
+TEMPLATE_A_2012 = """
+*Transaction Receipt*
+
+Dear Nick,
+
+Thank you for your PlayStation®Store purchase.
+
+A receipt of your purchase is below. Be sure to keep it in a safe place for future reference.
+
+Online ID: nbrett3
+
+Order Number: 3598131940
+
+Date Purchased
+Total
+12/25/2012 @ 10:07 AM
+$9.99
+
+Details Price
+
+CHRONO CROSS™ (PS3™/PSP®/PS Vita) (785 MB Required) $9.99
+
+Total: *$9.99*
+Current Wallet Amount*: *$0.00*
+"""
+
+
+def test_parse_template_a_2012_bare_items():
+    p = parse_psn_receipt(TEMPLATE_A_2012, message_id="m4")
+    assert p is not None
+    assert p.order_number == "3598131940"
+    assert p.purchased_at == "12/25/2012"
+    assert len(p.items) == 1
+    assert p.items[0].title == "CHRONO CROSS™ (PS3™/PSP®/PS Vita) (785 MB Required)"
+    assert p.items[0].price == "$9.99"
+
+
 def test_unrecognized_template_returns_none():
     assert parse_psn_receipt("some random email") is None
 

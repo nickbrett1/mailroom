@@ -39,7 +39,7 @@ def norm(s: str) -> str:
     s = unicodedata.normalize("NFKD", s)
     s = s.encode("ascii", "ignore").decode()
     s = PLATFORM_TOKENS.sub(" ", s)
-    s = re.sub(r"\(game\)|\(downloadable game\)", " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\([^)]*\)", " ", s, flags=re.IGNORECASE)  # any parenthetical suffix
     s = re.sub(r"[^a-z0-9]+", "", s.lower())
     return s
 
@@ -89,6 +89,15 @@ def main() -> None:
     }
     conn.close()
 
+    def sub_match(name: str) -> bool:
+        """Dump names often lack edition/remake/platform suffixes that the
+        receipt title carries ('Until Dawn' vs 'Until Dawn 2015'). Accept a
+        one-way containment when the shorter side is distinctive enough."""
+        n = norm(name)
+        if len(n) < 6:
+            return False
+        return any(n in t or (len(t) < len(n) and t in n) for t in email_titles)
+
     entries = parse_dump(args.dump)
     matched: list[tuple[str, str | None]] = []
     unmatched_games: list[tuple[str, str | None]] = []
@@ -98,7 +107,7 @@ def main() -> None:
         if cid is None:
             missing_id.append(name)
             continue
-        if norm(name) in email_titles:
+        if norm(name) in email_titles or sub_match(name):
             matched.append((name, cid))
         elif classify(name, cid) == "non-game":
             unmatched_nongame.append((name, cid))

@@ -19,13 +19,18 @@ _TEMPLATE_A = "A receipt of your purchase is below"
 # Post-2022 sender (reply@txn-email.playstation.com) drops the ™: "Your
 # PlayStation Store transaction was successful". Accept both.
 _TEMPLATE_B_RE = re.compile(r"Your PlayStation(?:™)? ?Store transaction was successful", re.IGNORECASE)
-# A parenthetical that says "game" = a catalog game ("(Game)",
-# "(Downloadable Game)"). Add-Ons / wallet / subscriptions are skipped.
-_GAME_PAREN_RE = re.compile(r"\([^)]*game[^)]*\)", re.IGNORECASE)
+# A parenthetical indicating a catalog game: "(Game)", "(Downloadable Game)",
+# "(Full Game)", PS1 Classics ("(PSOne Classic)", "(PS1 Emulation)"),
+# platform parens ("(PS3™/PSP®/PS Vita)", "(PS4 & PS5)") and download-size
+# parens ("(117 MB)", "(785 MB Required)"). Add-Ons / wallet / subscriptions
+# are skipped.
+_GAME_PAREN_RE = re.compile(r"\([^)]*(?:game|ps1|psone|ps2|ps3|psp|vita|ps4|ps5|mb|gb)[^)]*\)", re.IGNORECASE)
 
 _PRICE_RE = re.compile(r"\$\d[\d,]*(?:\.\d{2})?")
 _ORDER_RE = re.compile(r"Order Number:\s*([\w-]+)", re.IGNORECASE)
-_DATE_RE = re.compile(r"Date Purchased:\s*([\d/]+)")
+# Tolerant: 'Date Purchased: 12/14/2022' or 2012-era table layout
+# ('Date Purchased\nTotal\n12/25/2012 @ 10:07 AM').
+_DATE_RE = re.compile(r"Date\s*Purchased[^0-9]{0,40}?(\d{1,2}/\d{1,2}/\d{4})")
 _SUBTOTAL_RE = re.compile(r"Subtotal:\s*\$([\d,.]+)")
 _TAX_RE = re.compile(r"Tax:\s*\$([\d,.]+)")
 _TOTAL_RE = re.compile(r"\bTotal:\s*\$([\d,.]+)", re.IGNORECASE)
@@ -34,6 +39,16 @@ _TOTAL_RE = re.compile(r"\bTotal:\s*\$([\d,.]+)", re.IGNORECASE)
 def _strip_price(text: str) -> str:
     """Remove trailing price from an item title."""
     return re.sub(r"\s*\$[\d,.]*\s*$", "", text).strip()
+
+
+# Template B / fallback: 'Title (Game/platform parens) $price' pairs, possibly
+# on one line after the 'Details Price' header (also used for early Template A
+# receipts that list bare items without asterisks, e.g. PS1 Classics).
+_PAIR_RE = re.compile(
+    r"(?P<title>[^$\n]+?\([^)]*(?:game|ps1|psone|ps2|ps3|psp|vita|ps4|ps5|mb|gb)[^)]*\)(?:\s*\([^)]*\))*)"
+    r"\s*(?P<price>\$\d[\d,]*\.\d{2})",
+    re.IGNORECASE,
+)
 
 
 def _extract_items(section: str, template: str) -> list[PurchaseItem]:
@@ -48,18 +63,14 @@ def _extract_items(section: str, template: str) -> list[PurchaseItem]:
                 continue
             price = prices[i] if i < len(prices) else None
             items.append(PurchaseItem(title=title.strip(), price=price))
-    else:
-        # Template B: items are 'Title (Game) $price' pairs, possibly on one
-        # line after the 'Details Price' header. Drop the header first, then
-        # match non-greedily up to each price.
-        section = re.sub(r"^Details\s*Price\s*", "", section, flags=re.IGNORECASE)
-        pair_re = re.compile(
-            r"(?P<title>[^$\n]+?\([^)]*game[^)]*\))\s*(?P<price>\$\d[\d,]*\.\d{2})",
-            re.IGNORECASE,
-        )
-        for m in pair_re.finditer(section):
-            title = _strip_price(m.group("title")).strip()
-            items.append(PurchaseItem(title=title, price=m.group("price")))
+        if items:
+            return items
+        # Early Template A receipts (2012-era) list bare 'Title (…parens) $price'
+        # without asterisks — fall through to the pair regex.
+    section = re.sub(r"^Details\s*Price\s*", "", section, flags=re.IGNORECASE)
+    for m in _PAIR_RE.finditer(section):
+        title = _strip_price(m.group("title")).strip()
+        items.append(PurchaseItem(title=title, price=m.group("price")))
     return items
 
 
@@ -78,9 +89,12 @@ def parse_psn_receipt(body: str, message_id: str | None = None) -> Purchase | No
     order_number = order_match.group(1)
     date_match = _DATE_RE.search(body)
 
-    # Items live between 'Details' and 'Subtotal:'.
+    # Items live between 'Details' and 'Subtotal:' (or 'Total:' in early
+    # 2012-era receipts that lack a Subtotal line).
     start = body.find("Details")
     end = body.find("Subtotal:", start)
+    if end == -1:
+        end = body.find("Total:", start)
     if start == -1 or end == -1:
         return None
     section = body[start:end]
