@@ -132,7 +132,7 @@ def parse_source(
 ) -> list[Purchase]:
     """Dispatch a stored raw receipt to its source parser -> list[Purchase]."""
     if name == "amazon":
-        return parse_amazon_receipt(body, message_id=message_id)
+        return parse_amazon_receipt(body, message_id=message_id, subject=subject)
     if name == "cdkeys":
         p = parse_cdkeys_receipt(body, message_id=message_id)
         return [p] if p else []

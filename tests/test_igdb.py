@@ -79,6 +79,32 @@ def test_igdb_search_terms_fallbacks():
     assert terms[0] == "coffeetalk"
 
 
+def test_igdb_matches_prefers_platform_among_same_name_results():
+    """Resident Evil 4 case: three same-name entries (2005/2011/2023) — the
+    PS5 copy must match the 2023 remake (132181), not the HD (20065)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Resident Evil 4 - PS5", platform="ps5")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "resident evil 4": [
+                {"id": 145201, "name": "Resident Evil 4 and Resident Evil Code: Veronica X Bundle", "platforms": [48, 167]},
+                {"id": 20065, "name": "Resident Evil 4", "platforms": [9, 12]},  # HD (PS3)
+                {"id": 132181, "name": "Resident Evil 4", "platforms": [48, 167]},  # 2023 remake (PS5)
+                {"id": 145191, "name": "Resident Evil 4", "platforms": [8]},  # 2005 original (PS2)
+            ]
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 132181, "must pick the PS5-platform same-name entry"
+    conn.close()
+
+
 def test_igdb_matches_prefers_exact_name_over_first_result():
     """Elden Ring case: IGDB search ranks Nightreign first — the exact-name
     result must win (the 2022 original, 119133)."""

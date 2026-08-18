@@ -214,9 +214,10 @@ class IgdbClient:
 
     def search_game(self, name: str) -> list[dict[str, Any]]:
         """Search IGDB games by name, preferring PlayStation platforms."""
+        safe = re.sub(r'["\\\n\r\t]', "", name or "")
         rows = self._apicalypse(
             "games",
-            f'fields id,name,platforms,first_release_date; search "{name}"; limit 10;',
+            f'fields id,name,platforms,first_release_date; search "{safe}"; limit 10;',
         )
         ps = [r for r in rows if any(p in (r.get("platforms") or []) for p in self.PS_PLATFORM_IDS)]
         return ps or rows
