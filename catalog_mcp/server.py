@@ -15,7 +15,10 @@ import sqlite3
 
 from fastmcp import FastMCP
 
-DB_PATH = os.environ.get("CATALOG_DB", "/data/mailroom.db")
+
+def _db_path() -> str:
+    # read lazily so runtime env overrides / tests with different dbs work
+    return os.environ.get("CATALOG_DB", "/data/mailroom.db")
 
 mcp = FastMCP(
     "mailroom-catalog",
@@ -34,7 +37,7 @@ def _conn() -> sqlite3.Connection:
     # -shm index). Open read-write but enforce read-only at the connection:
     # PRAGMA query_only=ON makes every write fail, so this process can never
     # modify the store regardless of the mount mode.
-    conn = sqlite3.connect(f"file:{DB_PATH}?mode=rw", uri=True)
+    conn = sqlite3.connect(f"file:{_db_path()}?mode=rw", uri=True)
     conn.execute("PRAGMA query_only=ON")
     conn.row_factory = sqlite3.Row
     return conn
@@ -79,6 +82,77 @@ def get_game(game_id: int) -> dict | None:
     try:
         r = conn.execute("SELECT * FROM catalog_views WHERE game_id = ?", (game_id,)).fetchone()
         return _game(r) if r else None
+    finally:
+        conn.close()
+
+
+def _apply_filters(base: str, platform=None, format=None, ownership_class=None, genre=None) -> tuple[str, list]:
+    sql, params = base, []
+    for col, val in (("platform", platform), ("format", format), ("ownership_class", ownership_class)):
+        if val:
+            sql += f" AND {col} = ?"
+            params.append(val)
+    if genre:
+        sql += " AND genres LIKE ?"
+        params.append(f"%{genre}%")
+    return sql, params
+
+
+@mcp.tool
+def top_rated(limit: int = 20, platform: str | None = None, format: str | None = None, ownership_class: str | None = None) -> list[dict]:
+    """The best games in the collection by IGDB rating (unrated last)."""
+    sql, params = _apply_filters("SELECT * FROM catalog_views WHERE 1=1", platform=platform, format=format, ownership_class=ownership_class)
+    conn = _conn()
+    try:
+        rows = conn.execute(sql + " ORDER BY rating IS NULL, rating DESC LIMIT ?", [*params, min(limit, 200)]).fetchall()
+        return [_game(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@mcp.tool
+def catalog_list(
+    query: str | None = None,
+    platform: str | None = None,
+    format: str | None = None,
+    ownership_class: str | None = None,
+    genre: str | None = None,
+    sort: str = "title",
+    limit: int = 50,
+) -> list[dict]:
+    """List/filter the catalog. sort: title | rating | recent (igdb release) |
+    acquired (acquisition_date)."""
+    sql = "SELECT * FROM catalog_views WHERE 1=1"
+    params: list = []
+    if query:
+        sql += " AND title LIKE ?"
+        params.append(f"%{query}%")
+    sql, extra = _apply_filters(sql, platform=platform, format=format, ownership_class=ownership_class, genre=genre)
+    params.extend(extra)
+    order = {
+        "title": "title COLLATE NOCASE ASC",
+        "rating": "rating IS NULL, rating DESC",
+        "recent": "release_ts IS NULL, release_ts DESC",
+        "acquired": "acquisition_date IS NULL, acquisition_date DESC",
+    }.get(sort, "title COLLATE NOCASE ASC")
+    conn = _conn()
+    try:
+        rows = conn.execute(sql + f" ORDER BY {order} LIMIT ?", [*params, min(limit, 200)]).fetchall()
+        return [_game(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@mcp.tool
+def by_genre(genre: str, limit: int = 20) -> list[dict]:
+    """Owned games in a genre, best-rated first (e.g. 'Role-playing (RPG)')."""
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM catalog_views WHERE genres LIKE ? ORDER BY rating IS NULL, rating DESC LIMIT ?",
+            (f"%{genre}%", min(limit, 200)),
+        ).fetchall()
+        return [_game(r) for r in rows]
     finally:
         conn.close()
 
