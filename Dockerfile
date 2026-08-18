@@ -23,5 +23,5 @@ COPY --from=build /opt/venv /opt/venv
 COPY . .
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s CMD curl -fsS http://127.0.0.1:3000/server_info || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s CMD curl -fsS http://127.0.0.1:3003/server_info || exit 1
 CMD ["dagster","dev","-h","0.0.0.0","-p","3003"]
