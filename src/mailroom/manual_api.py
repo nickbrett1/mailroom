@@ -18,7 +18,7 @@ import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from mailroom.db import connect, init_db
+from mailroom.db import connect, get_credential, init_db, set_credential
 
 app = FastAPI(title="mailroom manual-edit API")
 
@@ -31,6 +31,10 @@ class MatchRequest(BaseModel):
     owned_game_id: int
     igdb_id: int
     note: str | None = None
+
+
+class PsnCredentialRequest(BaseModel):
+    npsso: str
 
 
 def _conn():
@@ -91,5 +95,51 @@ def igdb_match(req: MatchRequest) -> dict:
         )
         conn.commit()
         return {"owned_game_id": req.owned_game_id, "igdb_id": req.igdb_id, "applied": True}
+    finally:
+        conn.close()
+
+
+@app.post("/manual/psn-credential")
+def psn_credential(req: PsnCredentialRequest) -> dict:
+    """Refresh the PSN credential from a user-supplied NPSSO (UI workflow).
+
+    The catalog UI shows credentials.status (needs_refresh) and lets the user
+    paste a fresh NPSSO (from https://ca.account.sony.com/api/v1/ssocookie);
+    mailroom exchanges it and stores the refresh token — all writes through
+    mailroom, never the UI directly.
+    """
+    from scripts.psn_mint_token import exchange_npsso
+
+    from mailroom.clients import PsnAuthError
+
+    try:
+        tokens = exchange_npsso(req.npsso.strip())
+    except (PsnAuthError, RuntimeError, Exception) as exc:
+        conn = _conn()
+        set_credential(conn, "psn", status="needs_refresh", last_error=f"exchange failed: {exc}")
+        conn.close()
+        raise HTTPException(400, f"NPSSO exchange failed: {exc}") from exc
+    refresh = tokens.get("refresh_token")
+    if not refresh:
+        raise HTTPException(400, "exchange succeeded but no refresh token returned")
+    conn = _conn()
+    set_credential(conn, "psn", token=refresh, token_type="refresh_token", status="valid", last_error=None)
+    conn.close()
+    return {"status": "valid", "refresh_token_prefix": refresh[:12]}
+
+
+@app.get("/manual/psn-credential")
+def psn_credential_status() -> dict:
+    """Read-only credential status for the UI panel."""
+    conn = _conn()
+    try:
+        cred = get_credential(conn, "psn")
+        return {
+            "source": "psn",
+            "status": (cred or {}).get("status", "needs_refresh"),
+            "last_success": (cred or {}).get("last_success"),
+            "last_error": (cred or {}).get("last_error"),
+            "expires_at": (cred or {}).get("expires_at"),
+        }
     finally:
         conn.close()
