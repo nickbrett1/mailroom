@@ -34,6 +34,25 @@ services:
       - "homepage.widget.type=customapi"
       - "homepage.widget.url=http://localhost:3003/server_info"
 
+  # Manual-edit API — the ONLY write path for UI-driven catalog edits
+  # (same mailroom image; separate process; single-writer rule preserved).
+  mailroom-manual:
+    image: ghcr.io/nickbrett1/mailroom:latest
+    container_name: mailroom-manual
+    restart: unless-stopped
+    command: ["uvicorn", "mailroom.manual_api:app", "--host", "0.0.0.0", "--port", "3004"]
+    ports:
+      - "3004:3004"
+    volumes:
+      - /volume1/docker/mailroom/data:/data
+    environment:
+      MAILROOM_DB_URL: ${MAILROOM_DB_URL:-sqlite:////data/mailroom.db}
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "homepage.group=Services"
+      - "homepage.name=mailroom-manual"
+      - "homepage.href=http://nas:3004/health"
+
   # Read-only catalog MCP (FastMCP over the shared catalog_views store).
   # Builds from catalog_mcp/; mounted read-only to the same data volume.
   catalog-mcp:
