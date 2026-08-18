@@ -402,6 +402,30 @@ def owned_games(context: AssetExecutionContext) -> None:
     context.log.info(f"owned_games: {added} rows upserted")
 
 
+# IGDB platform ids for owned-platform preference among exact-name matches.
+_IGDB_PS_IDS = {
+    "playstation 5": {167},
+    "ps5": {167},
+    "playstation 4": {48},
+    "ps4": {48},
+    "ps vita": {46},
+    "vita": {46},
+    "playstation 3": {9},
+    "ps3": {9},
+    "playstation": {7, 8, 9, 38, 46, 48, 167},
+    "ps": {7, 8, 9, 38, 46, 48, 167},
+}
+
+
+def _igdb_platform_matches(igdb_platforms: list[int] | None, owned_platform: str) -> bool:
+    """True if an IGDB result's platforms include the owned platform (used to
+    disambiguate same-name entries — e.g. Resident Evil 4 2005/2011/2023)."""
+    if not igdb_platforms:
+        return False
+    wanted = _IGDB_PS_IDS.get((owned_platform or "").lower(), _IGDB_PS_IDS["playstation"])
+    return bool(wanted & set(igdb_platforms))
+
+
 def _igdb_name_matches(title: str, igdb_name: str | None) -> bool:
     """Exact-name check between our title and an IGDB result name.
 
@@ -415,7 +439,7 @@ def _igdb_name_matches(title: str, igdb_name: str | None) -> bool:
     def norm(s: str) -> str:
         s = re.sub(r"[™®©&()]", " ", s, flags=re.IGNORECASE)
         s = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45]|game)\b", " ", s, flags=re.IGNORECASE)
-        return re.sub(r"\s+", " ", s).strip().lower()
+        return re.sub(r"\s+", " ", s).strip(" -–—:;").lower()
 
     return norm(title) == norm(igdb_name)
 
@@ -493,8 +517,13 @@ def igdb_matches(context: AssetExecutionContext) -> None:
             # Prefer the EXACT-name result over results[0]: IGDB search ranks
             # hyped/newer titles first, so 'Elden Ring' can resolve to
             # 'Elden Ring Nightreign' (325591) instead of Elden Ring (119133).
-            exact = next((r for r in results if _igdb_name_matches(row["title"], r.get("name"))), None)
-            pick = exact if exact is not None else results[0]
+            # Among multiple same-name entries (Resident Evil 4 2005/2011/2023),
+            # prefer the one on our owned platform (PS5 -> the 2023 remake).
+            exact = [r for r in results if _igdb_name_matches(row["title"], r.get("name"))]
+            if exact:
+                pick = next((r for r in exact if _igdb_platform_matches(r.get("platforms") or [], row["platform"])), exact[0])
+            else:
+                pick = results[0]
             gid = pick["id"]
             matched_title = pick.get("name")
             method = "search"

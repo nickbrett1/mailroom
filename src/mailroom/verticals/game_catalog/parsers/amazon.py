@@ -72,7 +72,13 @@ def _parse_order_block(block: str, message_id: str | None) -> Purchase | None:
     )
 
 
-def parse_amazon_receipt(body: str, message_id: str | None = None) -> list[Purchase]:
+_SUBJECT_ITEM_RE = re.compile(r"order of [\"']?(?P<item>.+?)[\"']?\.?\s*$", re.IGNORECASE)
+# Shipped/delivered subjects end with " has shipped!" / " is out for delivery!" —
+# only the CONFIRMATION ("Your Amazon.com order of ...") carries the item fact.
+_SHIPPED_SUBJECT_RE = re.compile(r"shipped|out for delivery|delivered|arriving|will arrive", re.IGNORECASE)
+
+
+def parse_amazon_receipt(body: str, message_id: str | None = None, subject: str | None = None) -> list[Purchase]:
     """Parse an Amazon order email into one Purchase per order block."""
     # Split the body at each 'Order #' occurrence; each block is one order.
     starts = [m.start() for m in _ORDER_RE.finditer(body)]
@@ -84,4 +90,22 @@ def parse_amazon_receipt(body: str, message_id: str | None = None) -> list[Purch
         purchase = _parse_order_block(body[start:end], message_id)
         if purchase:
             purchases.append(purchase)
+    # Newer Amazon template: the confirmation body has the order # + total but
+    # NO item lines — the item lives only in the subject:
+    # "Your Amazon.com order of \"Resident Evil 4 - PS5\"." (verified msg 32705).
+    if not purchases and subject and not _SHIPPED_SUBJECT_RE.search(subject):
+        m = _SUBJECT_ITEM_RE.search(subject)
+        if m and m.group("item") and "order of" in subject.lower():
+            purchases.append(
+                Purchase(
+                    source="amazon",
+                    order_number=_ORDER_RE.search(body).group(1) if _ORDER_RE.search(body) else None,
+                    purchased_at=None,  # email received date (acquisition date)
+                    items=[PurchaseItem(title=m.group("item").strip(), price=None, qty=1)],
+                    subtotal=None,
+                    tax=None,
+                    total=None,
+                    message_id=str(message_id) if message_id else None,
+                )
+            )
     return purchases
