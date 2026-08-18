@@ -21,7 +21,21 @@ from mailroom.verticals.game_catalog import assets
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=os.environ.get("MAILROOM_DB_URL", "sqlite:////data/mailroom.db"))
+    ap.add_argument(
+        "--recheck",
+        action="store_true",
+        help="re-match ALL owned rows (not just unmatched): clears igdb_id first so the "
+        "exact-name matcher heals wrong picks (e.g. Elden Ring -> Nightreign). ~10-15 min.",
+    )
     args = ap.parse_args()
+
+    if args.recheck:
+        conn = connect(args.db)
+        init_db(conn)
+        conn.execute("UPDATE owned_games SET igdb_id = NULL")
+        conn.commit()
+        conn.close()
+        print("recheck: cleared igdb_id on all rows — re-matching with exact-name preference")
 
     igdb = IgdbClient(os.environ["IGDB_CLIENT_ID"], os.environ["IGDB_CLIENT_SECRET"])
     ctx = build_op_context(resources={"db_url": args.db, "igdb": igdb})
