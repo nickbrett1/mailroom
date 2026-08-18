@@ -79,6 +79,32 @@ def test_igdb_search_terms_fallbacks():
     assert terms[0] == "coffeetalk"
 
 
+def test_igdb_matches_prefers_exact_name_over_first_result():
+    """Elden Ring case: IGDB search ranks Nightreign first — the exact-name
+    result must win (the 2022 original, 119133)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "ELDEN RING™", platform="playstation 5")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "elden ring": [
+                {"id": 325591, "name": "Elden Ring Nightreign"},
+                {"id": 119133, "name": "Elden Ring"},
+            ]
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 119133, "must pick the exact-name Elden Ring, not Nightreign"
+    m = conn.execute("SELECT matched_title FROM igdb_matches").fetchone()
+    assert m["matched_title"] == "Elden Ring"
+    conn.close()
+
+
 def test_igdb_matches_falls_back_when_stripped_term_misses():
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")

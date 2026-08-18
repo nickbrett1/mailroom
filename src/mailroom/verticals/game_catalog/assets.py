@@ -402,6 +402,24 @@ def owned_games(context: AssetExecutionContext) -> None:
     context.log.info(f"owned_games: {added} rows upserted")
 
 
+def _igdb_name_matches(title: str, igdb_name: str | None) -> bool:
+    """Exact-name check between our title and an IGDB result name.
+
+    IGDB search ranks hyped/newer titles first (Elden Ring Nightreign before
+    Elden Ring), so taking results[0] can link a sequel/spinoff. Prefer the
+    result whose name normalizes to the same string as our title.
+    """
+    if not igdb_name:
+        return False
+
+    def norm(s: str) -> str:
+        s = re.sub(r"[™®©&()]", " ", s, flags=re.IGNORECASE)
+        s = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45]|game)\b", " ", s, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", s).strip().lower()
+
+    return norm(title) == norm(igdb_name)
+
+
 _EDITION_WORDS = (
     "standard edition", "deluxe edition", "ultimate edition", "launch edition",
     "collector's edition", "collectors edition", "game of the year edition",
@@ -472,8 +490,13 @@ def igdb_matches(context: AssetExecutionContext) -> None:
             if results:
                 break
         if results:
-            gid = results[0]["id"]
-            matched_title = results[0].get("name")
+            # Prefer the EXACT-name result over results[0]: IGDB search ranks
+            # hyped/newer titles first, so 'Elden Ring' can resolve to
+            # 'Elden Ring Nightreign' (325591) instead of Elden Ring (119133).
+            exact = next((r for r in results if _igdb_name_matches(row["title"], r.get("name"))), None)
+            pick = exact if exact is not None else results[0]
+            gid = pick["id"]
+            matched_title = pick.get("name")
             method = "search"
         if not gid and row["psn_content_id"]:
             gid = igdb.game_by_external_psn_uid(row["psn_content_id"])
