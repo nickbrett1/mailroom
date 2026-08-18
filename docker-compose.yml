@@ -33,3 +33,22 @@ services:
       - "homepage.href=http://nas:3003/"
       - "homepage.widget.type=customapi"
       - "homepage.widget.url=http://localhost:3003/server_info"
+
+  # Read-only catalog MCP (FastMCP over the shared catalog_views store).
+  # Builds from catalog_mcp/; mounted read-only to the same data volume.
+  catalog-mcp:
+    build: ./catalog_mcp
+    container_name: catalog-mcp
+    restart: unless-stopped
+    ports:
+      - "8766:8766"
+    volumes:
+      - /volume1/docker/mailroom/data:/data:ro
+    environment:
+      CATALOG_DB: ${CATALOG_DB:-/data/mailroom.db}
+      CATALOG_PORT: ${CATALOG_PORT:-8766}
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "homepage.group=Services"
+      - "homepage.name=catalog-mcp"
+      - "homepage.href=http://nas:8766/"
