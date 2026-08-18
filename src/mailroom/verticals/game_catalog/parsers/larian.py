@@ -50,16 +50,23 @@ def parse_larian_receipt(body: str, message_id: str | None = None) -> Purchase |
         section = lines[start + 1 : end + 1]
     except StopIteration:
         section = lines
+    def _hint(title: str) -> str | None:
+        if re.search(r"\bps5\b", title, re.IGNORECASE):
+            return "ps5"
+        if re.search(r"\bps4\b", title, re.IGNORECASE):
+            return "ps4"
+        return None
+
     pending_title: str | None = None
     for l in section:
         m = _PRICE_RE.search(l)
         if m and pending_title:
-            items.append(PurchaseItem(title=pending_title, price=money("$" + m.group("price")), qty=1))
+            items.append(PurchaseItem(title=pending_title, price=money("$" + m.group("price")), qty=1, platform_hint=_hint(pending_title)))
             pending_title = None
         elif l and ":" not in l and pending_title is None:
             pending_title = l.strip(" -*")  # title sits on its own line (no colon)
     if pending_title:
-        items.append(PurchaseItem(title=pending_title, price=None, qty=1))
+        items.append(PurchaseItem(title=pending_title, price=None, qty=1, platform_hint=_hint(pending_title)))
 
     # The summary line lists Items/Taxes/Shipping total then the real Total last.
     matches = list(_TOTAL_RE.finditer("\n".join(lines)))
