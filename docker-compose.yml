@@ -63,6 +63,24 @@ services:
       - "homepage.name=mailroom-manual"
       - "homepage.href=http://nas:3004/health"
 
+  # Dagster MCP (read-only) — runs/logs/assets/schedules for agents + goose
+  # debugging. Published to GHCR by CI; streamable HTTP on 8770.
+  dagster-mcp:
+    image: ghcr.io/nickbrett1/dagster-mcp:latest
+    container_name: dagster-mcp
+    restart: unless-stopped
+    ports:
+      - "8770:8770"
+    environment:
+      DAGSTER_URL: ${DAGSTER_URL:-http://mailroom:3003}
+      DAGSTER_READ_ONLY: ${DAGSTER_READ_ONLY:-true}
+      DAGSTER_MCP_PORT: ${DAGSTER_MCP_PORT:-8770}
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "homepage.group=Services"
+      - "homepage.name=dagster-mcp"
+      - "homepage.href=http://nas:8770/"
+
   # Read-only catalog MCP (FastMCP over the shared catalog_views store).
   # Published to GHCR by CI (ghcr.io/nickbrett1/catalog-mcp). The data volume
   # is mounted :rw because SQLite needs the -shm WAL index even for reads;
