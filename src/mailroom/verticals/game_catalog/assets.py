@@ -427,6 +427,26 @@ def igdb_search_term(title: str) -> str:
     return t[:80] or title[:80].lower()
 
 
+def igdb_search_terms(title: str) -> list[str]:
+    """Candidate search terms, best first: stripped term, raw title, digit-split.
+
+    The stripped term misses concatenated titles ('DIRT5' -> 'dirt 5') and
+    over-stripped ones ('God of War III Remastered' losing 'of'/'remastered'),
+    so when it returns nothing we fall back to the raw title, then to a
+    digit-boundary split ('dirt5' -> 'dirt 5').
+    """
+    terms = [igdb_search_term(title)]
+    raw = re.sub(r"\([^)]*\)", " ", title)
+    raw = re.sub(r"\s+", " ", raw).strip(" -–—:;").lower()
+    if raw and raw != terms[0]:
+        terms.append(raw)
+    split = re.sub(r"(?<=[a-z])(?=\d)", " ", terms[0])  # dirt5 -> dirt 5
+    split = re.sub(r"(?<=\d)(?=[a-z])", " ", split)      # 5x -> 5 x
+    if split and split not in terms:
+        terms.append(split)
+    return terms
+
+
 @asset(deps=[owned_games])
 def igdb_matches(context: AssetExecutionContext) -> None:
     """Match owned games to IGDB ids (paced).
@@ -443,7 +463,11 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     matched = unmatched = 0
     for row in rows:
         gid, matched_title, method = None, None, None
-        results = igdb.search_game(igdb_search_term(row["title"]))
+        results = []
+        for term in igdb_search_terms(row["title"]):
+            results = igdb.search_game(term)
+            if results:
+                break
         if results:
             gid = results[0]["id"]
             matched_title = results[0].get("name")
