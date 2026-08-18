@@ -58,7 +58,7 @@ PSN_SENDERS = (
 DIGITAL_SOURCES = {"psn_receipt", "cdkeys", "gameflip"}
 
 
-@asset(partitions_def=DAILY)
+@asset(partitions_def=DAILY, required_resource_keys={"db_url", "msgvault"})
 def raw_psn_receipts(context: AssetExecutionContext) -> None:
     """Fetch new PSN receipts from msgvault since the cursor and store raw."""
     conn = connect(context.resources.db_url)
@@ -97,7 +97,7 @@ def raw_psn_receipts(context: AssetExecutionContext) -> None:
     conn.close()
 
 
-@asset(partitions_def=DAILY, deps=[raw_psn_receipts])
+@asset(partitions_def=DAILY, deps=[raw_psn_receipts], required_resource_keys={"db_url"})
 def parsed_purchases_digital(context: AssetExecutionContext) -> None:
     """Parse stored PSN receipts into normalized purchases."""
     conn = connect(context.resources.db_url)
@@ -135,7 +135,7 @@ def parsed_purchases_digital(context: AssetExecutionContext) -> None:
     context.log.info(f"parsed {parsed} PSN receipts")
 
 
-@asset
+@asset(required_resource_keys={"db_url", "psn_api"})
 def psn_api_owned(context: AssetExecutionContext) -> None:
     """Weekly PSN full-library sync (PS App OAuth refresh token).
 
@@ -204,7 +204,7 @@ def psn_api_owned(context: AssetExecutionContext) -> None:
     context.log.info(f"psn_api_owned: {added} added, {confirmed} confirmed/updated ({len(titles)} library items)")
 
 
-@asset
+@asset(required_resource_keys={"db_url", "msgvault"})
 def raw_retailer_receipts(context: AssetExecutionContext) -> None:
     """Fetch new retailer order emails per source (senders + subject filter)
     since each source's cursor, and store raw (Best Buy: recover the web-view
@@ -252,7 +252,7 @@ def raw_retailer_receipts(context: AssetExecutionContext) -> None:
     conn.close()
 
 
-@asset(deps=[raw_retailer_receipts])
+@asset(deps=[raw_retailer_receipts], required_resource_keys={"db_url"})
 def parsed_purchases_physical(context: AssetExecutionContext) -> None:
     """Parse stored retailer receipts into normalized purchases (one row per
     line item, keyed (source, order_number, item_title); Mercari uses item_id).
@@ -320,7 +320,7 @@ def parsed_purchases_physical(context: AssetExecutionContext) -> None:
     context.log.info(f"parsed {parsed} retailer receipts")
 
 
-@asset(partitions_def=DAILY, deps=[parsed_purchases_digital, parsed_purchases_physical])
+@asset(partitions_def=DAILY, deps=[parsed_purchases_digital, parsed_purchases_physical], required_resource_keys={"db_url"})
 def classified_game_items(context: AssetExecutionContext) -> None:
     """Classify parsed items (digital + physical) through the platform gate;
     ambiguous → review queue."""
@@ -357,7 +357,7 @@ def classified_game_items(context: AssetExecutionContext) -> None:
     conn.close()
 
 
-@asset(partitions_def=DAILY, deps=[classified_game_items])
+@asset(partitions_def=DAILY, deps=[classified_game_items], required_resource_keys={"db_url"})
 def owned_games(context: AssetExecutionContext) -> None:
     """Merge classified PlayStation items into the definitive store."""
     conn = connect(context.resources.db_url)
@@ -492,7 +492,7 @@ def igdb_search_terms(title: str) -> list[str]:
     return terms
 
 
-@asset(deps=[owned_games])
+@asset(deps=[owned_games], required_resource_keys={"db_url", "igdb"})
 def igdb_matches(context: AssetExecutionContext) -> None:
     """Match owned games to IGDB ids (paced).
 
@@ -545,7 +545,7 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     context.log.info(f"igdb_matches: {matched} matched, {unmatched} unmatched")
 
 
-@asset(deps=[igdb_matches])
+@asset(deps=[igdb_matches], required_resource_keys={"db_url", "igdb"})
 def game_metadata(context: AssetExecutionContext) -> None:
     """IGDB details per matched game (covers/genres/rating/release). Paced,
     resumable (skips ids already fetched); on-demand only, not scheduled."""
@@ -571,7 +571,7 @@ def game_metadata(context: AssetExecutionContext) -> None:
     context.log.info(f"game_metadata: fetched {fetched}")
 
 
-@asset(deps=[game_metadata])
+@asset(deps=[game_metadata], required_resource_keys={"db_url"})
 def catalog_views(context: AssetExecutionContext) -> None:
     """Read model for the site/MCP — a VIEW created by init_db over
     owned_games LEFT JOIN game_metadata. Materializing ensures it exists."""
