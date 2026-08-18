@@ -461,12 +461,14 @@ def igdb_resource(context) -> IgdbClient:  # type: ignore[no-untyped-def]
     )
 
 
-@resource
+@resource(required_resource_keys={"db_url"})
 def psn_api_resource(context) -> PsnApiClient:  # type: ignore[no-untyped-def]
     """PSN client built from the refresh token in the credentials table.
 
     The token lives in the DB (memos/game-catalog-pipeline §PSN sync), not
     .env — a UI refresh writes through mailroom without container edits.
+    Declares its db_url dependency so Dagster injects it at resource init
+    (BUG-1: without required_resource_keys, cross-resource access fails).
     """
     from mailroom.db import connect, get_credential, init_db
 

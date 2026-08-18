@@ -29,7 +29,13 @@ mcp = FastMCP(
 
 
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    # BUG-2 fix (memos/mailroom-deploy-bugs): a `?mode=ro` URI connection
+    # cannot open a WAL database on a `:ro` mount (SQLite needs to create the
+    # -shm index). Open read-write but enforce read-only at the connection:
+    # PRAGMA query_only=ON makes every write fail, so this process can never
+    # modify the store regardless of the mount mode.
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=rw", uri=True)
+    conn.execute("PRAGMA query_only=ON")
     conn.row_factory = sqlite3.Row
     return conn
 
