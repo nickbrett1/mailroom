@@ -103,7 +103,7 @@ def parsed_purchases_digital(context: AssetExecutionContext) -> None:
     conn = connect(context.resources.db_url)
     init_db(conn)
     rows = conn.execute(
-        "SELECT message_id, body FROM raw_receipts WHERE source = 'psn_receipt'"
+        "SELECT message_id, body, received_at FROM raw_receipts WHERE source = 'psn_receipt'"
     ).fetchall()
     parsed = 0
     for row in rows:
@@ -121,7 +121,7 @@ def parsed_purchases_digital(context: AssetExecutionContext) -> None:
                     purchase.source,
                     purchase.order_number,
                     f"{purchase.order_number}:{i}",
-                    purchase.purchased_at,
+                    purchase.purchased_at or row["received_at"],  # email date fallback = acquisition date
                     item.title,
                     item.platform_hint,
                     item.price,
@@ -287,7 +287,7 @@ def parsed_purchases_physical(context: AssetExecutionContext) -> None:
                         row["source"],
                         purchase.order_number,
                         item_key,
-                        purchase.purchased_at,
+                        purchase.purchased_at or row["received_at"],  # email date fallback = acquisition date
                         item.title,
                         item.platform_hint,
                         item.price,
@@ -363,7 +363,10 @@ def owned_games(context: AssetExecutionContext) -> None:
     conn = connect(context.resources.db_url)
     init_db(conn)
     rows = conn.execute(
-        """SELECT c.* FROM classified_game_items c
+        """SELECT c.*, p.purchased_at AS acquisition_date
+           FROM classified_game_items c
+           LEFT JOIN parsed_purchases p
+             ON p.source = c.source AND p.order_number = c.order_number AND p.item_key = c.item_key
            WHERE c.classification = 'playstation_game'"""
     ).fetchall()
     added = 0
@@ -385,7 +388,7 @@ def owned_games(context: AssetExecutionContext) -> None:
                 "condition": None,
                 "psn_content_id": None,
                 "igdb_id": None,
-                "acquisition_date": None,
+                "acquisition_date": row["acquisition_date"],  # email date / receipt date
                 "price": None,
                 "source": row["source"],
                 "source_ref": row["item_key"],
