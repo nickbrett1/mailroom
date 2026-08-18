@@ -8,6 +8,8 @@ dependencies = [
     "dagster",
     "dagster-webserver",
     "httpx",
+    "fastapi",
+    "uvicorn",  # manual-edit API (mailroom write path),
 ]
 
 [project.optional-dependencies]

@@ -100,6 +100,21 @@ def catalog_stats() -> dict:
 
 
 @mcp.tool
+def needs_igdb_match(limit: int = 100) -> list[dict]:
+    """Owned games still missing an IGDB match (the review list)."""
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT game_id, title, platform, format, ownership_class FROM catalog_views "
+            "WHERE igdb_id IS NULL ORDER BY title LIMIT ?",
+            (min(limit, 500),),
+        ).fetchall()
+        return [_game(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@mcp.tool
 def recently_added(limit: int = 20) -> list[dict]:
     """Most recently updated catalog games."""
     conn = _conn()
