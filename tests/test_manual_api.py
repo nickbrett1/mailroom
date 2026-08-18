@@ -76,3 +76,36 @@ def test_apply_match_then_no_longer_needed(client):
 def test_apply_unknown_game_404(client):
     res = client.post("/manual/igdb-match", json={"owned_game_id": 9999, "igdb_id": 1})
     assert res.status_code == 404
+
+
+def test_psn_credential_status_and_refresh(client, monkeypatch):
+    from mailroom.db import connect, set_credential
+
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    set_credential(conn, "psn", token="rt-old", status="needs_refresh", last_error="expired")
+    conn.close()
+
+    status = client.get("/manual/psn-credential").json()
+    assert status["status"] == "needs_refresh"
+    assert status["last_error"] == "expired"
+
+    # stub the NPSSO exchange (avoids live Sony + PSN_CLIENT_SECRET in tests)
+    monkeypatch.setattr(
+        "scripts.psn_mint_token.exchange_npsso",
+        lambda npsso: {"refresh_token": "rt-new-1234567890", "access_token": "at"},
+    )
+    res = client.post("/manual/psn-credential", json={"npsso": "v3.test"})
+    assert res.status_code == 200
+    assert res.json()["status"] == "valid"
+
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    cred = get_credential_for_test(conn)
+    assert cred["status"] == "valid"
+    assert cred["token"] == "rt-new-1234567890"
+    conn.close()
+
+
+def get_credential_for_test(conn):
+    from mailroom.db import get_credential
+
+    return get_credential(conn, "psn")
