@@ -15,6 +15,7 @@ import httpx
 from dagster import (
     AssetExecutionContext,
     DailyPartitionsDefinition,
+    Field,
     asset,
 )
 
@@ -492,7 +493,11 @@ def igdb_search_terms(title: str) -> list[str]:
     return terms
 
 
-@asset(deps=[owned_games], required_resource_keys={"db_url", "igdb"})
+@asset(
+    deps=[owned_games],
+    required_resource_keys={"db_url", "igdb"},
+    config_schema={"recheck": Field(bool, default_value=False)},
+)
 def igdb_matches(context: AssetExecutionContext) -> None:
     """Match owned games to IGDB ids (paced).
 
@@ -500,10 +505,20 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     ALL rows — IGDB external_games has ~no PSN entries (verified 2026-08-17),
     so the psn_content_id -> external_games lookup is only a last-resort
     fallback when search finds nothing. Target <5% unmatched.
+
+    Config `recheck: true` re-matches EVERY row (clears igdb_id first) so the
+    improved exact-name/platform matcher heals wrong picks (Elden Ring ->
+    Nightreign class) — trigger from the UI (Materialize with config) or via
+    the catalog_recheck job.
     """
     conn = connect(context.resources.db_url)
     init_db(conn)
     igdb = context.resources.igdb
+    if context.op_config.get("recheck"):
+        # re-match everything: clear igdb_id so the loop below re-processes all
+        # rows with the exact-name/platform matcher (heals wrong picks)
+        conn.execute("UPDATE owned_games SET igdb_id = NULL, updated_at = datetime('now') WHERE igdb_id IS NOT NULL")
+        conn.commit()
     rows = conn.execute("SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id IS NULL").fetchall()
     matched = unmatched = 0
     for row in rows:

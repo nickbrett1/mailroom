@@ -29,16 +29,11 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if args.recheck:
-        conn = connect(args.db)
-        init_db(conn)
-        conn.execute("UPDATE owned_games SET igdb_id = NULL")
-        conn.commit()
-        conn.close()
-        print("recheck: cleared igdb_id on all rows — re-matching with exact-name preference")
-
     igdb = IgdbClient(os.environ["IGDB_CLIENT_ID"], os.environ["IGDB_CLIENT_SECRET"])
-    ctx = build_op_context(resources={"db_url": args.db, "igdb": igdb})
+    # recheck is now the igdb_matches asset's own config (the asset clears
+    # igdb_id when recheck=true) — one code path, also triggerable from the
+    # Dagster UI (catalog_recheck job / Materialize with config).
+    ctx = build_op_context(resources={"db_url": args.db, "igdb": igdb}, config={"recheck": bool(args.recheck)})
     assets.igdb_matches(ctx)
     assets.game_metadata(ctx)
     assets.catalog_views(ctx)

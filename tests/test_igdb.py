@@ -131,6 +131,30 @@ def test_igdb_matches_prefers_exact_name_over_first_result():
     conn.close()
 
 
+def test_igdb_matches_recheck_config_rematches_all():
+    """recheck config clears igdb_id and re-matches — heals wrong picks
+    (a row matched to igdb 999 re-resolves to the exact-name result)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Elden Ring", platform="playstation 5", igdb_id=325591)  # wrong (Nightreign)
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "elden ring": [
+                {"id": 325591, "name": "Elden Ring Nightreign", "platforms": [167]},
+                {"id": 119133, "name": "Elden Ring", "platforms": [48, 167]},
+            ]
+        }
+    )
+    assets.igdb_matches(build_op_context(resources={"db_url": f"sqlite:///{db}", "igdb": stub}, config={"recheck": True}))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 119133, "recheck must re-resolve to the exact-name Elden Ring"
+    conn.close()
+
+
 def test_igdb_matches_falls_back_when_stripped_term_misses():
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")
