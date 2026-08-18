@@ -50,6 +50,16 @@ psn_sync_schedule = ScheduleDefinition(
     execution_timezone="America/New_York",
 )
 
+# Catalog recheck — re-match EVERY owned row with the exact-name/platform
+# matcher + refresh metadata + views (heals wrong IGDB picks like Elden Ring
+# -> Nightreign). Trigger from the UI (Jobs tab -> Launch) or via the
+# igdb_matches asset's config (Materialize with config {"recheck": true}).
+catalog_recheck_job = define_asset_job(
+    "catalog_recheck",
+    selection=AssetSelection.keys("igdb_matches", "game_metadata", "catalog_views"),
+    config={"ops": {"igdb_matches": {"config": {"recheck": True}}}},
+)
+
 definitions = Definitions(
     assets=[
         raw_psn_receipts,
@@ -69,5 +79,6 @@ definitions = Definitions(
         "psn_api": psn_api_resource,
         "db_url": db_url_resource,
     },
+    jobs=[catalog_recheck_job],
     schedules=[psn_sync_schedule],
 )
