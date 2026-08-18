@@ -73,7 +73,7 @@ def test_order_confirmation_parses():
     assert item.price == "$79.99"
     c = classify_item(item.title, platform_hint=item.platform_hint)
     assert c.classification == "playstation_game"
-    assert c.platform == "ps5"
+    assert c.platform == "playstation"  # classifier normalizes PS5 -> playstation
 
 
 def test_key_email_returns_none():
