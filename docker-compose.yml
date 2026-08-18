@@ -54,9 +54,10 @@ services:
       - "homepage.href=http://nas:3004/health"
 
   # Read-only catalog MCP (FastMCP over the shared catalog_views store).
-  # Builds from catalog_mcp/; mounted read-only to the same data volume.
+  # Published to GHCR by CI (ghcr.io/nickbrett1/catalog-mcp); mounted
+  # read-only to the same data volume.
   catalog-mcp:
-    build: ./catalog_mcp
+    image: ghcr.io/nickbrett1/catalog-mcp:latest
     container_name: catalog-mcp
     restart: unless-stopped
     ports:
