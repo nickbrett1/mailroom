@@ -98,3 +98,38 @@ def test_catalog_stats_ps_plus_split(catalog_env):
 def test_recently_added(catalog_env):
     srv = catalog_env
     assert len(srv.recently_added()) >= 3
+
+
+def _seed_metadata(db_path):
+    """Add ratings/genres/release to the seeded store for the query tools."""
+    import json
+
+    from mailroom.db import connect
+
+    conn = connect(f"sqlite:///{db_path}")
+    payloads = {
+        1942: {"id": 1942, "name": "God of War", "total_rating": 93.0, "aggregated_rating": 94.0, "first_release_date": 1522454400, "cover": {"url": "//c1.jpg"}, "genres": [{"name": "Action"}, {"name": "Adventure"}]},
+        41494: {"id": 41494, "name": "Cyberpunk 2077", "total_rating": 86.0, "first_release_date": 1606694400, "genres": [{"name": "Role-playing (RPG)"}]},
+    }
+    for gid, payload in payloads.items():
+        conn.execute("INSERT OR REPLACE INTO game_metadata(igdb_id, payload) VALUES (?, ?)", (gid, json.dumps(payload)))
+    conn.commit()
+    conn.close()
+
+
+def test_top_rated_and_catalog_list(catalog_env):
+    _seed_metadata(catalog_env.__name__ and __import__("os").environ["CATALOG_DB"])
+    srv = catalog_env
+    top = srv.top_rated()
+    assert top[0]["title"] == "God of War"  # 93.0 first
+    assert top[0]["rating"] == 93.0
+    assert top[1]["title"] == "Cyberpunk 2077"
+    # the extracted columns are exposed
+    assert top[0]["cover_url"] and top[0]["genres"] == "Action, Adventure"
+    # sort + filters
+    rpg = srv.catalog_list(genre="Role-playing", sort="rating")
+    assert [g["title"] for g in rpg] == ["Cyberpunk 2077"]
+    recent = srv.catalog_list(sort="recent")
+    assert recent[0]["title"] == "Cyberpunk 2077"  # 2020 > 2018
+    byg = srv.by_genre("Action")
+    assert [g["title"] for g in byg] == ["God of War"]

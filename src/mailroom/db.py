@@ -131,7 +131,12 @@ CREATE TABLE IF NOT EXISTS game_metadata (
 );
 
 -- Read model for the catalog site / MCP (owned games + IGDB enrichment).
-CREATE VIEW IF NOT EXISTS catalog_views AS
+-- Key IGDB metadata is extracted into real columns (SQLite JSON1) so agents /
+-- the site can sort and filter (top rated, by genre, by year) without parsing
+-- the payload blob. DROP + CREATE keeps the view definition current on every
+-- init_db (views are cheap; recreating applies schema changes).
+DROP VIEW IF EXISTS catalog_views;
+CREATE VIEW catalog_views AS
 SELECT
     g.id AS game_id,
     g.title,
@@ -148,7 +153,13 @@ SELECT
     g.source,
     g.is_owned,
     g.provenance,
-    m.payload AS igdb_payload
+    m.payload AS igdb_payload,
+    CAST(json_extract(m.payload, '$.total_rating') AS REAL) AS rating,
+    CAST(json_extract(m.payload, '$.aggregated_rating') AS REAL) AS aggregated_rating,
+    CAST(json_extract(m.payload, '$.first_release_date') AS INTEGER) AS release_ts,
+    json_extract(m.payload, '$.cover.url') AS cover_url,
+    (SELECT group_concat(json_extract(j.value, '$.name'), ', ')
+       FROM json_each(m.payload, '$.genres') j) AS genres
 FROM owned_games g
 LEFT JOIN game_metadata m ON m.igdb_id = g.igdb_id
 WHERE g.is_owned = 1;
