@@ -22,6 +22,7 @@ from mailroom.verticals.game_catalog.parsers.ebay import parse_ebay_receipt
 from mailroom.verticals.game_catalog.parsers.gameflip import parse_gameflip_receipt
 from mailroom.verticals.game_catalog.parsers.gamefly import parse_gamefly_receipt
 from mailroom.verticals.game_catalog.parsers.gamestop import parse_gamestop_receipt
+from mailroom.verticals.game_catalog.parsers.larian import parse_larian_receipt
 from mailroom.verticals.game_catalog.parsers.mercari import parse_mercari_receipt
 from mailroom.verticals.game_catalog.parsers.shopify import parse_shopify_receipt
 from mailroom.verticals.game_catalog.parsers.target import parse_target_receipt
@@ -57,6 +58,11 @@ RETAILER_SOURCES: list[RetailerSource] = [
             "store+60936585381@t.shopifyemail.com",  # Atari
         ],
         parser=parse_shopify_receipt,
+    ),
+    RetailerSource(
+        name="larian",
+        senders=["merchstore@larian.com"],
+        parser=parse_larian_receipt,
     ),
     RetailerSource(
         name="bestbuy",
@@ -132,6 +138,9 @@ def parse_source(
         return [p] if p else []
     if name == "gameflip":
         p = parse_gameflip_receipt(body, message_id=message_id)
+        return [p] if p else []
+    if name == "larian":
+        p = parse_larian_receipt(body, message_id=message_id)
         return [p] if p else []
     if name == "mercari":
         p = parse_mercari_receipt(body, message_id=message_id, subject=subject)
