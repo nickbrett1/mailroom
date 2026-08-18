@@ -69,6 +69,32 @@ def test_igdb_search_term_strips_noise():
     assert assets.igdb_search_term("ABZÛ - PlayStation 4") == "abzu"  # accents kept
 
 
+def test_igdb_search_terms_fallbacks():
+    terms = assets.igdb_search_terms("DIRT5")
+    assert "dirt 5" in terms  # digit-split recovers the space
+    terms = assets.igdb_search_terms("God of War III Remastered Standard Edition - PlayStation 4")
+    assert terms[0] == "god war iii standard"  # stripped
+    assert "god of war iii remastered standard edition - playstation 4" in terms  # raw fallback
+    terms = assets.igdb_search_terms("CoffeeTalk")
+    assert terms[0] == "coffeetalk"
+
+
+def test_igdb_matches_falls_back_when_stripped_term_misses():
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "DIRT5", platform="playstation 4")
+    conn.close()
+
+    # stripped term "dirt5" matches nothing; digit-split "dirt 5" does
+    stub = _StubIgdb(search={"dirt 5": [{"id": 18623, "name": "DIRT 5"}]})
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 18623
+    conn.close()
+
+
 def test_igdb_matches_digital_via_external_and_physical_via_search():
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")
