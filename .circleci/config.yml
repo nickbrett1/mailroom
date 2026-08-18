@@ -44,11 +44,17 @@ jobs:
           command: |
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
       - run:
-          name: Build and Push Multi-Arch Image
+          name: Build and Push Multi-Arch Image (mailroom)
           command: |
             docker buildx create --use || true
             docker buildx build --platform linux/amd64,linux/arm64 \
               -t ghcr.io/nickbrett1/mailroom:$CIRCLE_SHA1 -t ghcr.io/nickbrett1/mailroom:latest --push .
+      - run:
+          name: Build and Push Multi-Arch Image (catalog-mcp)
+          command: |
+            docker buildx create --use || true
+            docker buildx build --platform linux/amd64,linux/arm64 \
+              -t ghcr.io/nickbrett1/catalog-mcp:$CIRCLE_SHA1 -t ghcr.io/nickbrett1/catalog-mcp:latest --push catalog_mcp
 workflows:
   build-and-test:
     jobs:
