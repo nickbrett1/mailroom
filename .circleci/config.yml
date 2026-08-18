@@ -55,6 +55,12 @@ jobs:
             docker buildx create --use || true
             docker buildx build --platform linux/amd64,linux/arm64 \
               -t ghcr.io/nickbrett1/catalog-mcp:$CIRCLE_SHA1 -t ghcr.io/nickbrett1/catalog-mcp:latest --push catalog_mcp
+      - run:
+          name: Build and Push Multi-Arch Image (dagster-mcp)
+          command: |
+            docker buildx create --use || true
+            docker buildx build --platform linux/amd64,linux/arm64 \
+              -t ghcr.io/nickbrett1/dagster-mcp:$CIRCLE_SHA1 -t ghcr.io/nickbrett1/dagster-mcp:latest --push dagster-mcp
 workflows:
   build-and-test:
     jobs:
