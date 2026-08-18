@@ -24,7 +24,8 @@ services:
       MSGVAULT_TOKEN: ${MSGVAULT_TOKEN}
       IGDB_CLIENT_ID: ${IGDB_CLIENT_ID}
       IGDB_CLIENT_SECRET: ${IGDB_CLIENT_SECRET}
-      NPSSO: ${NPSSO}
+      PSN_CLIENT_ID: ${PSN_CLIENT_ID}
+      PSN_CLIENT_SECRET: ${PSN_CLIENT_SECRET}
       DAGSTER_HOME: ${DAGSTER_HOME:-/data/dagster}
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
@@ -47,6 +48,15 @@ services:
       - /volume1/docker/mailroom/data:/data
     environment:
       MAILROOM_DB_URL: ${MAILROOM_DB_URL:-sqlite:////data/mailroom.db}
+      PSN_CLIENT_ID: ${PSN_CLIENT_ID}
+      PSN_CLIENT_SECRET: ${PSN_CLIENT_SECRET}
+    # The image HEALTHCHECK curls :3003; this process listens on :3004
+    # (BUG-3 fix — compose-level override).
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3004/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
       - "homepage.group=Services"
@@ -54,8 +64,9 @@ services:
       - "homepage.href=http://nas:3004/health"
 
   # Read-only catalog MCP (FastMCP over the shared catalog_views store).
-  # Published to GHCR by CI (ghcr.io/nickbrett1/catalog-mcp); mounted
-  # read-only to the same data volume.
+  # Published to GHCR by CI (ghcr.io/nickbrett1/catalog-mcp). The data volume
+  # is mounted :rw because SQLite needs the -shm WAL index even for reads;
+  # read-only-ness is enforced in-code via PRAGMA query_only=ON (BUG-2 fix).
   catalog-mcp:
     image: ghcr.io/nickbrett1/catalog-mcp:latest
     container_name: catalog-mcp
@@ -63,7 +74,7 @@ services:
     ports:
       - "8766:8766"
     volumes:
-      - /volume1/docker/mailroom/data:/data:ro
+      - /volume1/docker/mailroom/data:/data
     environment:
       CATALOG_DB: ${CATALOG_DB:-/data/mailroom.db}
       CATALOG_PORT: ${CATALOG_PORT:-8766}

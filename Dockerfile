@@ -24,4 +24,7 @@ COPY . .
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s CMD curl -fsS http://127.0.0.1:3003/server_info || exit 1
-CMD ["dagster","dev","-h","0.0.0.0","-p","3003"]
+# BUG-3 fixes (memos/mailroom-deploy-bugs): dagster dev needs the module
+# (-m mailroom.definitions — no [tool.dagster] block exists) and DAGSTER_HOME
+# must exist before boot (it's a mount at runtime, so mkdir in the entry).
+CMD ["sh","-c","mkdir -p ${DAGSTER_HOME:-/data/dagster} && exec dagster dev -h 0.0.0.0 -p 3003 -m mailroom.definitions"]

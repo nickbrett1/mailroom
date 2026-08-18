@@ -5,9 +5,27 @@ from __future__ import annotations
 
 import os
 
-from dagster import AssetSelection, Definitions, ScheduleDefinition, define_asset_job
+from dagster import (
+    AssetSelection,
+    Definitions,
+    ScheduleDefinition,
+    define_asset_job,
+    resource,
+)
 
 from mailroom.clients import igdb_resource, msgvault_resource, psn_api_resource
+
+
+@resource
+def db_url_resource(context) -> str:  # type: ignore[no-untyped-def]
+    """The store location as a Dagster RESOURCE (not a plain string).
+
+    Dagster only injects @resource-wrapped entries into asset contexts; a
+    plain-value `Definitions(resources={"db_url": "sqlite:///..."})` entry is
+    not attached, which made every materialization fail with
+    `Unknown resource db_url` (memos/mailroom-deploy-bugs BUG-1).
+    """
+    return os.environ.get("MAILROOM_DB_URL", "sqlite:////data/mailroom.db")
 from mailroom.verticals.game_catalog.assets import (
     catalog_views,
     classified_game_items,
@@ -49,7 +67,7 @@ definitions = Definitions(
         "msgvault": msgvault_resource,
         "igdb": igdb_resource,
         "psn_api": psn_api_resource,
-        "db_url": os.environ.get("MAILROOM_DB_URL", "sqlite:////data/mailroom.db"),
+        "db_url": db_url_resource,
     },
     schedules=[psn_sync_schedule],
 )
