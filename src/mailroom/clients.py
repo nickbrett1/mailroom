@@ -354,6 +354,49 @@ class PsnApiClient:
             },
         )
 
+    TROPHY_URL = "https://m.np.playstation.com/api/trophy/v1/users/me/trophyTitles"
+
+    def trophy_titles(self, limit: int = 800) -> list[dict[str, Any]]:
+        """Per-title trophy + PLAYTIME pull from the Trophy API (paginated).
+
+        The entitlements endpoint carries no playtime; the trophy API does —
+        each title has `playDuration` (ISO-8601, e.g. 'PT24H15M') plus
+        earnedTrophies/definedTrophies/progress. Same Bearer token as the
+        library pull; npCommunicationId == owned_games.psn_content_id.
+        Response: {totalResults, trophyTitles: [{npCommunicationId,
+        trophyTitleName, trophyTitlePlatform, playDuration, earnedTrophies,
+        definedTrophies, progress, lastUpdateDate, ...}]}.
+        """
+        token = self._access_token()
+        out: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            resp = self._client.get(
+                self.TROPHY_URL,
+                headers={"Authorization": f"Bearer {token}"},
+                params={
+                    "limit": min(limit, 800),
+                    "offset": offset,
+                    "fields": (
+                        "npCommunicationId,trophyTitleName,trophyTitleDetail,trophyTitleIconUrl,"
+                        "trophyTitlePlatform,hasTrophyGroups,definedTrophies,earnedTrophies,"
+                        "progress,hiddenFlag,lastUpdateDate,playDuration"
+                    ),
+                    "sortBy": "titleName",
+                },
+            )
+            if resp.status_code in (400, 401):
+                raise PsnAuthError(f"PSN trophy request rejected (HTTP {resp.status_code})")
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("trophyTitles") or []
+            out.extend(items)
+            total = data.get("totalResults") or 0
+            offset += len(items)
+            if not items or offset >= total:
+                break
+        return out
+
     def library_titles(self, limit: int = 500) -> list[dict[str, Any]]:
         """Full title-library (entitlements) pull, paginated.
 
@@ -496,6 +539,41 @@ def psn_library_item_to_game(item: dict[str, Any]) -> dict[str, Any] | None:
         "status": "owned",
         "is_owned": 1,
         "provenance": f"psn_api:{content_id}",
+    }
+
+
+_ISO8601_DURATION_RE = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?")
+
+
+def iso8601_duration_minutes(duration: str | None) -> int | None:
+    """'PT24H15M' -> 1455; 'PT0M' -> 0; None/'' -> None (no playtime)."""
+    if not duration:
+        return None
+    m = _ISO8601_DURATION_RE.fullmatch(duration.strip())
+    if not m:
+        return None
+    hours, minutes, seconds = (int(x or 0) for x in m.groups())
+    return hours * 60 + minutes + (1 if seconds else 0)
+
+
+def psn_trophy_item_to_stats(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize a trophy-title entry into a game_stats row.
+
+    Keyed on npCommunicationId (== psn_content_id). playDuration is ISO-8601
+    ('PT24H15M') — converted to minutes; absent when PSN has no playtime.
+    """
+    cid = item.get("npCommunicationId")
+    if not cid:
+        return None
+    defined = item.get("definedTrophies") or {}
+    earned = item.get("earnedTrophies") or {}
+    return {
+        "psn_content_id": cid,
+        "playtime_minutes": iso8601_duration_minutes(item.get("playDuration")),
+        "trophies_earned": earned.get("total") or 0,
+        "trophies_defined": defined.get("total") or 0,
+        "progress": item.get("progress"),
+        "last_update": item.get("lastUpdateDate"),
     }
 
 

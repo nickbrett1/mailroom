@@ -22,6 +22,7 @@ from dagster import (
 from mailroom.clients import (
     PsnAuthError,
     psn_library_item_to_game,
+    psn_trophy_item_to_stats,
     recover_webview_html,
 )
 from mailroom.db import (
@@ -224,6 +225,72 @@ def psn_api_owned(context: AssetExecutionContext) -> None:
     set_credential(conn, "psn", status="valid", last_success=datetime.now(UTC).isoformat(timespec="seconds"))
     conn.close()
     context.log.info(f"psn_api_owned: {added} added, {confirmed} confirmed/updated ({len(titles)} library items)")
+
+
+@asset(deps=[psn_api_owned], required_resource_keys={"db_url", "psn_api"})
+def psn_playtime(context: AssetExecutionContext) -> None:
+    """Playtime + trophy stats per title from the PSN Trophy API.
+
+    The entitlements sync carries no playtime; the trophy API is the only PSN
+    source (playDuration, ISO-8601). Same Bearer token. Upserts game_stats
+    keyed on psn_content_id; catalog_views surfaces hours_played /
+    trophy_progress. Auth failures degrade to needs_refresh like the sync.
+    """
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    cred = get_credential(conn, "psn")
+    if not cred or not cred.get("token"):
+        context.log.warning("psn_playtime: no PSN refresh token — skipped")
+        conn.close()
+        return
+    try:
+        raw = context.resources.psn_api.trophy_titles()
+    except PsnAuthError as exc:
+        set_credential(conn, "psn", status="needs_refresh", last_error=str(exc))
+        context.log.warning(f"psn_playtime: auth degraded to needs_refresh ({exc})")
+        conn.close()
+        return
+    except httpx.HTTPError as exc:
+        context.log.error(f"psn_playtime: fetch failed: {exc}")
+        conn.close()
+        return
+    # Log a raw sample every run so the field shape stays verified against a
+    # live account (playDuration presence/format, npCommunicationId).
+    if raw:
+        first = raw[0]
+        context.log.info(
+            f"psn_playtime: raw sample keys={sorted(first.keys())} "
+            f"npCommunicationId={first.get('npCommunicationId')!r} playDuration={first.get('playDuration')!r}"
+        )
+    upserted = 0
+    for item in raw:
+        stats = psn_trophy_item_to_stats(item)
+        if not stats:
+            continue
+        conn.execute(
+            """INSERT INTO game_stats(psn_content_id, playtime_minutes, trophies_earned,
+                   trophies_defined, progress, last_update, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(psn_content_id) DO UPDATE SET
+                 playtime_minutes = excluded.playtime_minutes,
+                 trophies_earned = excluded.trophies_earned,
+                 trophies_defined = excluded.trophies_defined,
+                 progress = excluded.progress,
+                 last_update = excluded.last_update,
+                 updated_at = datetime('now')""",
+            (
+                stats["psn_content_id"],
+                stats["playtime_minutes"],
+                stats["trophies_earned"],
+                stats["trophies_defined"],
+                stats["progress"],
+                stats["last_update"],
+            ),
+        )
+        upserted += 1
+    conn.commit()
+    conn.close()
+    context.log.info(f"psn_playtime: upserted {upserted} title stats")
 
 
 @asset(required_resource_keys={"db_url", "msgvault"})
