@@ -40,11 +40,47 @@ from mailroom.verticals.game_catalog.assets import (
     raw_retailer_receipts,
 )
 
+# Catalog daily — email receipts -> owned_games -> incremental IGDB enrichment.
+# New purchases are matched, deduped, enriched and in the views within 24h.
+# igdb_matches runs WITHOUT recheck here (only rows with igdb_id IS NULL hit the
+# IGDB API), so a daily tick is cheap; game_metadata is paced + resumable.
+catalog_daily_job = define_asset_job(
+    "catalog_daily",
+    selection=AssetSelection.keys(
+        "raw_psn_receipts",
+        "raw_retailer_receipts",
+        "parsed_purchases_digital",
+        "parsed_purchases_physical",
+        "classified_game_items",
+        "owned_games",
+        "igdb_matches",
+        "dedupe_owned_games",
+        "game_metadata",
+        "catalog_views",
+    ),
+)
+catalog_daily_schedule = ScheduleDefinition(
+    job=catalog_daily_job,
+    cron_schedule="0 6 * * *",
+    execution_timezone="America/New_York",
+)
+
 # PSN full-library sync — every Tuesday 21:00 local (Essentials drop is the
 # first Tuesday; weekly catches late claims + mid-month Extra/Premium adds).
-# Degrades to credentials.status=needs_refresh on auth failure and catches up
-# on the next valid token (memos/game-catalog-pipeline §PSN sync).
-psn_sync_job = define_asset_job("psn_sync", selection=AssetSelection.keys("psn_api_owned"))
+# Runs the incremental enrichment tail after the sync so Tuesday's claims are
+# matched + enriched the same night. Degrades to credentials.status=
+# needs_refresh on auth failure and catches up on the next valid token
+# (memos/game-catalog-pipeline §PSN sync).
+psn_sync_job = define_asset_job(
+    "psn_sync",
+    selection=AssetSelection.keys(
+        "psn_api_owned",
+        "igdb_matches",
+        "dedupe_owned_games",
+        "game_metadata",
+        "catalog_views",
+    ),
+)
 psn_sync_schedule = ScheduleDefinition(
     job=psn_sync_job,
     cron_schedule="0 21 * * 2",
@@ -82,5 +118,5 @@ definitions = Definitions(
         "db_url": db_url_resource,
     },
     jobs=[catalog_recheck_job],
-    schedules=[psn_sync_schedule],
+    schedules=[catalog_daily_schedule, psn_sync_schedule],
 )
