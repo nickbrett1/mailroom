@@ -30,6 +30,7 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from mailroom.db import provenance_parts
 from mailroom.verticals.game_catalog.parsers.psn import normalize_title
@@ -48,11 +49,14 @@ NON_GAME_CONTENT_MARKERS = (
 _CANCELLED_TITLE_RE = re.compile(r"\bcancel", re.IGNORECASE)
 
 # --- jammed content-id splits ------------------------------------------------
-# One merged row (game_id 857 in the live store) carried TWO games' content
-# ids because 'GODS Remastered' was IGDB-matched to God of War Ragnarök and
-# dedup collapsed them. Verified against the archive (msgvault):
-#   - PSN receipt order 252319130093 (2021-03-17): GODS Remastered $3.99
-#   - CDKeys order 0151509331 (2023-01-27): God of War Ragnarök PS5 (US) $47.99
+# Merged rows carried TWO games' content ids because a wrong IGDB match let
+# dedup collapse them. Verified against the archive (msgvault):
+#   - PSN receipt 252319130093 (2021-03-17): GODS Remastered $3.99
+#   - CDKeys 0151509331 (2023-01-27): God of War Ragnarök PS5 (US) $47.99
+#   - PSN receipt 293544327031 (2021-09-19): Super Meat Boy $2.99
+#   - PSN receipt 786997197463109 (2026-01-06): Super Meat Boy Forever $2.49
+#   - PSN receipt 253086790958 (2021-03-04): FINAL FANTASY VII REMAKE $0.00
+#     (PS+ Essential claim — ownership_class psplus_claimed)
 SPLIT_OVERRIDES = {
     "UP3909-CUSA15513_00-GODSREMASTERED00": {
         "title": "GODS Remastered",
@@ -68,6 +72,33 @@ SPLIT_OVERRIDES = {
         "acquisition_date": "01/27/2023",
         "price": "$47.99",
     },
+    "UP1055-CUSA16602_00-SUPERMEATBOYFORE": {
+        "title": "Super Meat Boy Forever",
+        "platform": "playstation 4",
+        "igdb_id": 44129,  # IGDB 'Super Meat Boy Forever' (2020)
+        "acquisition_date": "01/06/2026",
+        "price": "$2.49",
+    },
+    "UP1055-CUSA02845_00-SUPERMEATBOY0000": {
+        "title": "Super Meat Boy",
+        "platform": "playstation 4",
+        "igdb_id": 885,  # IGDB 'Super Meat Boy' (2010)
+        "acquisition_date": "09/19/2021",
+        "price": "$2.99",
+    },
+    "UP0082-CUSA07211_00-FFVIIREMAKE00000": {
+        "title": "FINAL FANTASY VII REMAKE",
+        "platform": "playstation 4",
+        "igdb_id": 11169,  # IGDB 'Final Fantasy VII Remake' (2020)
+        "ownership_class": "psplus_claimed",  # PS+ Essential claim ($0 receipt)
+        "acquisition_date": "03/04/2021",
+        "price": "$0.00",
+    },
+    "UP0082-CUSA01875_00-FINALFANTASY7ZZZ": {
+        "title": "FINAL FANTASY VII",
+        "platform": "playstation 4",
+        "igdb_id": 207026,  # IGDB 'Final Fantasy VII' (PS4 port of the 1997 game)
+    },
 }
 
 # Provenance refs that don't carry the content id (receipt/cdkeys order
@@ -75,6 +106,9 @@ SPLIT_OVERRIDES = {
 _ORDER_TO_CID = {
     "252319130093": "UP3909-CUSA15513_00-GODSREMASTERED00",  # PSN receipt GODS Remastered
     "0151509331": "UP9000-PPSA08329_00-GOWRAGNAROK00000",    # CDKeys God of War Ragnarök
+    "293544327031": "UP1055-CUSA02845_00-SUPERMEATBOY0000",  # PSN receipt Super Meat Boy
+    "786997197463109": "UP1055-CUSA16602_00-SUPERMEATBOYFORE",  # PSN receipt Super Meat Boy Forever
+    "253086790958": "UP0082-CUSA07211_00-FFVIIREMAKE00000",  # PSN receipt FFVII REMAKE ($0 PS+ claim)
 }
 
 # --- ambiguous short titles pinned by content id ----------------------------
@@ -120,6 +154,68 @@ def _prov_cid(part: str) -> str | None:
     return None
 
 
+# Content ids in the PSN dump: 'UP9000-CUSA08010_00-DREAMS0000000000'.
+_PSN_CID_RE = re.compile(r"([A-Z]{2}\d{4}-[A-Z0-9]{4,}_\d{2}-[A-Z0-9]+)")
+
+
+def _platform_for_content_id(cid: str) -> str:
+    """Platform heuristic from the content id (CUSA=PS4, PPSA=PS5, PCSE=Vita)."""
+    upper = cid.upper()
+    if "PPSA" in upper:
+        return "playstation 5"
+    if "CUSA" in upper:
+        return "playstation 4"
+    if "PCSE" in upper or "PCSF" in upper:
+        return "ps vita"
+    if "NPUJ" in upper or "NPUA" in upper or "NPUF" in upper:
+        return "playstation 3"  # PS1 classics / minis era
+    if "NPJB" in upper:
+        return "playstation"  # PSP
+    return "playstation"
+
+
+_psn_dump_titles: dict[str, str] | None = None
+
+
+def _load_psn_dump_titles() -> dict[str, str]:
+    """content id -> title from inputs/psn_dump.txt (bundled into the image;
+    names may wrap across lines, same parse as scripts/check_psn_dump.py)."""
+    global _psn_dump_titles
+    if _psn_dump_titles is not None:
+        return _psn_dump_titles
+    path = Path(__file__).resolve().parents[4] / "inputs" / "psn_dump.txt"
+    _psn_dump_titles = {}
+    if not path.exists():
+        return _psn_dump_titles
+    text = path.read_text(encoding="utf-8")
+    pos = 0
+    for m in _PSN_CID_RE.finditer(text):
+        name = text[pos : m.start()]
+        pos = m.end()
+        name = re.sub(r"\s*\n\s*", " ", name)
+        name = re.sub(r"\s+", " ", name).strip(" -\n")
+        if name:
+            _psn_dump_titles[m.group(1)] = name
+    return _psn_dump_titles
+
+
+def _split_plan(cid: str) -> dict | None:
+    """Split row fields for one content id: verified override, else a generic
+    plan (title from the PSN dump + platform heuristic, igdb left for the next
+    igdb_matches pass). None when the id can't be resolved at all."""
+    if cid in SPLIT_OVERRIDES:
+        return dict(SPLIT_OVERRIDES[cid])
+    title = _load_psn_dump_titles().get(cid)
+    if not title:
+        return None
+    return {
+        "title": title,
+        "platform": _platform_for_content_id(cid),
+        "igdb_id": None,
+        "generic": True,
+    }
+
+
 def _prov_json(parts: list[str]) -> str | None:
     return "[" + ", ".join(json.dumps(p) for p in parts) + "]" if parts else None
 
@@ -127,51 +223,56 @@ def _prov_json(parts: list[str]) -> str | None:
 def _split_jammed_row(conn, row, report: RepairReport) -> None:
     """Split one owned_games row whose psn_content_id carries two games."""
     cids = [c.strip() for c in (row["psn_content_id"] or "").split(",") if c.strip()]
-    known = [c for c in cids if c in SPLIT_OVERRIDES]
-    if len(known) < 2:
+    plans = [(cid, _split_plan(cid)) for cid in cids]
+    resolvable = [(cid, ov) for cid, ov in plans if ov is not None]
+    if len(resolvable) < 2:
         report.skipped.append(
             {"id": row["id"], "title": row["title"], "reason": "unrecognized merged content ids"}
         )
         return
     parts = provenance_parts(row["provenance"])
-    first = known[0]
-    first_ov = SPLIT_OVERRIDES[first]
-    keep_prov = [p for p in parts if _prov_cid(p) in (None, first)]
+    first_cid, first_ov = resolvable[0]
+    generic = first_ov.get("generic", False)
+    keep_prov = [p for p in parts if _prov_cid(p) in (None, first_cid)]
     # Original row keeps the FIRST game (id stable).
     conn.execute(
         """UPDATE owned_games SET
              title = ?, normalized_title = ?, platform = ?, igdb_id = ?,
              psn_content_id = ?, acquisition_date = ?, price = ?,
-             provenance = ?, updated_at = datetime('now')
+             ownership_class = ?, provenance = ?, updated_at = datetime('now')
            WHERE id = ?""",
         (
             first_ov["title"],
             normalize_title(first_ov["title"]),
             first_ov["platform"],
             first_ov["igdb_id"],
-            first,
+            first_cid,
             first_ov.get("acquisition_date"),
             first_ov.get("price"),
+            first_ov.get("ownership_class", row["ownership_class"]),
             _prov_json(keep_prov),
             row["id"],
         ),
     )
     conn.execute("DELETE FROM igdb_matches WHERE owned_game_id = ?", (row["id"],))
-    conn.execute(
-        """INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title)
-           VALUES (?, ?, 'manual', ?)""",
-        (row["id"], first_ov["igdb_id"], first_ov["title"]),
-    )
+    if first_ov["igdb_id"]:
+        conn.execute(
+            """INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title)
+               VALUES (?, ?, 'manual', ?)""",
+            (row["id"], first_ov["igdb_id"], first_ov["title"]),
+        )
     _audit(
         conn, row["id"], first_ov["title"],
         "split_jammed_content_ids",
-        f"kept {first}; split out {', '.join(known[1:])} (was {row['psn_content_id']})",
+        f"kept {first_cid}; split out {', '.join(c for c, _ in resolvable[1:])} (was {row['psn_content_id']})"
+        + ("; generic plan — verify IGDB match" if generic else ""),
     )
-    report.split.append({"id": row["id"], "title": first_ov["title"], "kept_cid": first, "split_cids": known[1:]})
+    report.split.append(
+        {"id": row["id"], "title": first_ov["title"], "kept_cid": first_cid, "split_cids": [c for c, _ in resolvable[1:]]}
+    )
 
     # Insert a fresh row for each additional game.
-    for cid in known[1:]:
-        ov = SPLIT_OVERRIDES[cid]
+    for cid, ov in resolvable[1:]:
         prov = [p for p in parts if _prov_cid(p) == cid]
         cur = conn.execute(
             """INSERT INTO owned_games
@@ -183,7 +284,7 @@ def _split_jammed_row(conn, row, report: RepairReport) -> None:
                 ov["title"],
                 normalize_title(ov["title"]),
                 ov["platform"],
-                row["ownership_class"],
+                ov.get("ownership_class", row["ownership_class"]),
                 row["retailer"],
                 None,
                 None,
@@ -198,15 +299,17 @@ def _split_jammed_row(conn, row, report: RepairReport) -> None:
             ),
         )
         new_id = cur.lastrowid
-        conn.execute(
-            """INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title)
-               VALUES (?, ?, 'manual', ?)""",
-            (new_id, ov["igdb_id"], ov["title"]),
-        )
+        if ov["igdb_id"]:
+            conn.execute(
+                """INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title)
+                   VALUES (?, ?, 'manual', ?)""",
+                (new_id, ov["igdb_id"], ov["title"]),
+            )
         _audit(
             conn, new_id, ov["title"],
             "split_jammed_content_ids",
-            f"split out of owned game {row['id']} (was merged under {row['psn_content_id']})",
+            f"split out of owned game {row['id']} (was merged under {row['psn_content_id']})"
+            + ("; generic plan — verify IGDB match" if ov.get("generic") else ""),
         )
         report.split.append({"id": new_id, "title": ov["title"], "kept_cid": cid, "split_cids": []})
 
