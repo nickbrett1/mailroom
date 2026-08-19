@@ -277,3 +277,35 @@ def test_owned_games_classifies_zero_price_psn_receipt_as_psplus_claim():
     assert rows["Armello™ (Game)"]["ownership_class"] == "purchased"
     assert rows["Armello™ (Game)"]["price"] == "$7.49"
     conn.close()
+
+
+def test_owned_games_merge_order_paid_receipt_wins_over_claim():
+    """Same game from two receipts — one paid, one $0 PS+ claim — the merged
+    row is 'purchased' (any real purchase owns the game) regardless of row
+    order; a claim-only game stays 'psplus_claimed'."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    for order, price in [
+        ("263932697921", "$39.99"),   # paid purchase
+        ("384720390939", "$0.00"),    # later $0 PS+ claim (Witcher 3 case)
+    ]:
+        item_key = f"{order}:0"
+        conn.execute(
+            """INSERT INTO parsed_purchases(source, order_number, item_key, purchased_at, title, platform, price)
+               VALUES ('psn_receipt', ?, ?, '2022-12-14', 'The Witcher 3: Wild Hunt – Complete Edition (Game)', 'playstation', ?)""",
+            (order, item_key, price),
+        )
+        conn.execute(
+            """INSERT INTO classified_game_items(source, order_number, item_key, title, platform, classification, reason)
+               VALUES ('psn_receipt', ?, ?, 'The Witcher 3: Wild Hunt – Complete Edition (Game)', 'playstation', 'playstation_game', 'PSN receipt (platform implicit)')""",
+            (order, item_key),
+        )
+    conn.commit()
+    conn.close()
+
+    assets.owned_games(_ctx(f"sqlite:///{db}", _StubIgdb()))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT ownership_class, price FROM owned_games").fetchone()
+    assert row["ownership_class"] == "purchased"  # the $39.99 purchase wins
+    conn.close()
