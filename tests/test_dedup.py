@@ -386,6 +386,49 @@ def test_manual_igdb_match_merges_on_collision(monkeypatch):
     conn.close()
 
 
+def test_reingest_updates_winner_not_retired_loser():
+    """Hot Wheels case end-to-end: a $0 PSN receipt was merged as 'purchased'
+    (wrong) and its receipt row retired. Re-running the fixed owned_games asset
+    reclassifies the receipt as psplus_claimed AND the upsert must update the
+    OWNED winner row — not the retired loser — flipping the winner to
+    psplus_claimed."""
+    conn, path = _db_legacy()
+    winner = _seed(conn, title="HOT WHEELS UNLEASHED™ (Game)", source="psn_api",
+                   psn_content_id="UP1981-PPSA02324_00-HWUPSPLUS0000000", igdb_id=144072,
+                   platform="playstation 4", ownership_class="psplus_claimed",
+                   provenance="psn_api:UP1981-PPSA02324_00-HWUPSPLUS0000000")
+    _seed(conn, title="HOT WHEELS UNLEASHED™ (Game)", source="psn_receipt",
+          order_number="369813850135", igdb_id=144072, platform="playstation 4",
+          ownership_class="purchased", provenance="psn_receipt:369813850135:0")
+    # previous (buggy) dedup: merged, winner row ended up 'purchased' (min rank
+    # across the wrongly-purchased receipt) — exactly the live state
+    dedupe_owned_games(conn)
+    assert len(_owned(conn)) == 1
+    assert _owned(conn)[0]["ownership_class"] == "purchased"
+    assert _owned(conn)[0]["id"] == winner
+
+    # parsed + classified receipt row for the same purchase ($0 = PS+ claim)
+    conn.execute(
+        """INSERT INTO parsed_purchases(source, order_number, item_key, purchased_at, title, platform, price)
+           VALUES ('psn_receipt', '369813850135', '369813850135:0', '10/04/2022', 'HOT WHEELS UNLEASHED™ (Game)', 'playstation 4', '$0.00')"""
+    )
+    conn.execute(
+        """INSERT INTO classified_game_items(source, order_number, item_key, title, platform, classification, reason)
+           VALUES ('psn_receipt', '369813850135', '369813850135:0', 'HOT WHEELS UNLEASHED™ (Game)', 'playstation 4', 'playstation_game', 'PSN receipt (platform implicit)')"""
+    )
+    conn.commit()
+    conn.close()
+
+    assets.owned_games(build_op_context(resources={"db_url": f"sqlite:///{path}"}))
+    conn = connect(f"sqlite:///{path}")
+    owned = _owned(conn)
+    assert len(owned) == 1
+    assert owned[0]["id"] == winner  # updated the winner, not the retired loser
+    assert owned[0]["ownership_class"] == "psplus_claimed"
+    assert owned[0]["price"] == "$0.00"
+    conn.close()
+
+
 def test_dedupe_asset_runs_idempotent():
     conn, path = _db()
     _seed(conn, source="psn_api", psn_content_id="PPSA08329", igdb_id=112875, platform="playstation 5")
