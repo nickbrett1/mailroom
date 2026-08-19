@@ -145,6 +145,16 @@ def test_library_item_normalization():
     assert _to_game({"id": "UP4", "productId": "UP4", "gameMeta": {"name": "Theme Hospital", "type": "PS4GD"}, "rewardMeta": {"rewardServiceType": 0}}) is not None  # not an artbook/theme
 
 
+def test_connect_sets_busy_timeout_for_concurrent_writers():
+    """Two Dagster runs landing at once must not fail with 'database is
+    locked' — WAL allows one writer, but busy_timeout makes the second wait
+    (seen live 2026-08-19 after the restart backlog)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+    conn.close()
+
+
 def test_credential_helpers_and_owned_games_migration():
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")
