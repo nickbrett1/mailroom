@@ -73,7 +73,9 @@ services:
       - "8770:8770"
     environment:
       DAGSTER_URL: ${DAGSTER_URL:-http://mailroom:3003}
-      DAGSTER_READ_ONLY: ${DAGSTER_READ_ONLY:-true}
+      # write-enabled (agents can launch runs / backfills / stop schedules);
+      # set DAGSTER_READ_ONLY=true in .env to re-lock to read-only
+      DAGSTER_READ_ONLY: ${DAGSTER_READ_ONLY:-false}
       DAGSTER_MCP_PORT: ${DAGSTER_MCP_PORT:-8770}
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
