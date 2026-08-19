@@ -99,6 +99,19 @@ def merge_group(conn, rows: Iterable[dict | Any]) -> int:
         (r["platform"] for r in rows if r["platform"] not in _GENERIC_PLATFORMS),
         winner["platform"],
     )
+    # Retire the losers FIRST: the partial dedup index is over
+    # (igdb_id, platform, format) WHERE is_owned=1 — if the winner is the
+    # incoming row (e.g. a psn_api row matched after its receipt row) its
+    # igdb_id update would collide with the still-owned loser, so the losers
+    # must leave the index before the winner claims the key.
+    for r in losers:
+        conn.execute(
+            """UPDATE owned_games SET
+                 is_owned = 0, status = 'retired',
+                 retire_reason = ?, updated_at = datetime('now')
+               WHERE id = ?""",
+            (f"dup_merged:game_id={winner['id']}", r["id"]),
+        )
     conn.execute(
         """UPDATE owned_games SET
              igdb_id = COALESCE(igdb_id, ?),
@@ -121,14 +134,6 @@ def merge_group(conn, rows: Iterable[dict | Any]) -> int:
             winner["id"],
         ),
     )
-    for r in losers:
-        conn.execute(
-            """UPDATE owned_games SET
-                 is_owned = 0, status = 'retired',
-                 retire_reason = ?, updated_at = datetime('now')
-               WHERE id = ?""",
-            (f"dup_merged:game_id={winner['id']}", r["id"]),
-        )
     return winner["id"]
 
 

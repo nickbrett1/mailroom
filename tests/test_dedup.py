@@ -440,3 +440,34 @@ def test_dedupe_asset_runs_idempotent():
     conn = connect(f"sqlite:///{path}")
     assert len(_owned(conn)) == 1
     conn.close()
+
+
+def test_igdb_matches_collapses_when_incoming_row_is_higher_rank():
+    """Enrichment-time collapse when the INCOMING row outranks the existing
+    one (psn_api rank 0 vs an already-matched receipt): the winner update must
+    not collide with the still-owned loser (regression: UNIQUE constraint
+    failed on the partial dedup index)."""
+    conn, path = _db()
+    # receipt row already matched (psn_api row for the same game arrives later)
+    a = _seed(conn, title="GODS Remastered", source="psn_receipt", order_number="252319130093",
+              platform="playstation 4", igdb_id=112099, acquisition_date="2021-03-17")
+    b = _seed(conn, title="GODS Remastered", source="psn_api",
+              psn_content_id="UP3909-CUSA15513_00-GODSREMASTERED00",
+              platform="playstation 4", igdb_id=None)
+
+    class _Stub:
+        def game_by_external_psn_uid(self, uid):
+            return None
+
+        def search_game(self, name):
+            return [{"id": 112099, "name": "Gods Remastered", "platforms": [48]}]
+
+    assets.igdb_matches(build_op_context(resources={"db_url": f"sqlite:///{path}", "igdb": _Stub()}))
+    conn = connect(f"sqlite:///{path}")
+    owned = _owned(conn)
+    assert len(owned) == 1, "must collapse, not error on the dedup index"
+    assert owned[0]["id"] == b  # psn_api row outranks the receipt
+    assert owned[0]["igdb_id"] == 112099
+    retired = conn.execute("SELECT * FROM owned_games WHERE is_owned = 0").fetchone()
+    assert retired["id"] == a
+    conn.close()
