@@ -58,6 +58,21 @@ PSN_SENDERS = (
 DIGITAL_SOURCES = {"psn_receipt", "cdkeys", "gameflip"}
 
 
+def _price_is_zero(price: str | None) -> bool:
+    """True when a parsed price string is $0.00.
+
+    PSN Store 'Thank You For Your Purchase' emails for PS+ claims (monthly /
+    catalog 'add to library') carry $0.00 line items — e.g. Hot Wheels
+    Unleashed 10/04/2022, Wreckfest 05/08/2021, Witcher 3 Complete Edition
+    12/14/2022. The store never emails a receipt for a truly-free game, so a
+    $0 PSN item is the claim signal.
+    """
+    if not price:
+        return False
+    m = re.search(r"\d+(?:\.\d+)?", price)
+    return bool(m) and float(m.group()) == 0.0
+
+
 @asset(required_resource_keys={"db_url", "msgvault"})
 def raw_psn_receipts(context: AssetExecutionContext) -> None:
     """Fetch new PSN receipts from msgvault since the cursor and store raw."""
@@ -366,11 +381,19 @@ def classified_game_items(context: AssetExecutionContext) -> None:
 
 @asset(deps=[classified_game_items], required_resource_keys={"db_url"})
 def owned_games(context: AssetExecutionContext) -> None:
-    """Merge classified PlayStation items into the definitive store."""
+    """Merge classified PlayStation items into the definitive store.
+
+    Ownership classification: receipts are purchases EXCEPT PSN Store emails
+    whose line item is $0.00 — those are PS+ claims (monthly/catalog 'add to
+    library' emails carry a $0 price; see _price_is_zero). A $0 claim must not
+    become 'purchased', or the dedup merge would keep it over the API's
+    psplus_claimed row and the game would wrongly survive a PS+ cancellation
+    (Hot Wheels Unleashed 10/04/2022, memos/catalog-dedup-fix).
+    """
     conn = connect(context.resources.db_url)
     init_db(conn)
     rows = conn.execute(
-        """SELECT c.*, p.purchased_at AS acquisition_date
+        """SELECT c.*, p.purchased_at AS acquisition_date, p.price AS item_price
            FROM classified_game_items c
            LEFT JOIN parsed_purchases p
              ON p.source = c.source AND p.order_number = c.order_number AND p.item_key = c.item_key
@@ -381,6 +404,9 @@ def owned_games(context: AssetExecutionContext) -> None:
         # psn_receipt = PlayStation Store; cdkeys/gameflip = digital key codes —
         # all digital games. Everything else is physical.
         is_digital = row["source"] in DIGITAL_SOURCES
+        ownership_class = "purchased"
+        if row["source"] == "psn_receipt" and _price_is_zero(row["item_price"]):
+            ownership_class = "psplus_claimed"
         game_id = upsert_owned_game(
             conn,
             {
@@ -388,7 +414,7 @@ def owned_games(context: AssetExecutionContext) -> None:
                 "normalized_title": normalize_title(row["title"]),
                 "platform": row["platform"] or "playstation",
                 "format": "digital" if is_digital else "physical",
-                "ownership_class": "purchased",  # receipts = purchases; PS+ claims come via psn_api_owned
+                "ownership_class": ownership_class,
                 "retailer": None if is_digital else row["source"],
                 "order_number": row["order_number"],
                 "item_id": None,
@@ -396,7 +422,7 @@ def owned_games(context: AssetExecutionContext) -> None:
                 "psn_content_id": None,
                 "igdb_id": None,
                 "acquisition_date": row["acquisition_date"],  # email date / receipt date
-                "price": None,
+                "price": row["item_price"],  # thread the parsed price through (evidence on the row)
                 "source": row["source"],
                 "source_ref": row["item_key"],
                 "status": "owned",

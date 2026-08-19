@@ -240,3 +240,40 @@ def test_owned_games_receipts_path_supplies_ownership_class():
     assert row["format"] == "physical"
     assert row["ownership_class"] == "purchased"
     conn.close()
+
+
+def test_owned_games_classifies_zero_price_psn_receipt_as_psplus_claim():
+    """PSN Store emails with a $0.00 line item are PS+ claims (Hot Wheels
+    Unleashed 10/04/2022, Witcher 3 Complete Edition 12/14/2022) — NOT
+    purchases. A paid PSN item stays purchased; the price is threaded through."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    for order, title, price in [
+        ("369813850135", "HOT WHEELS UNLEASHED™ (Game)", "$0.00"),
+        ("384720390939", "The Witcher 3: Wild Hunt – Complete Edition (Game)", "$0.00"),
+        ("787094772850142", "Armello™ (Game)", "$7.49"),
+    ]:
+        item_key = f"{order}:0"
+        conn.execute(
+            """INSERT INTO parsed_purchases(source, order_number, item_key, purchased_at, title, platform, price)
+               VALUES ('psn_receipt', ?, ?, '2022-10-04', ?, 'playstation', ?)""",
+            (order, item_key, title, price),
+        )
+        conn.execute(
+            """INSERT INTO classified_game_items(source, order_number, item_key, title, platform, classification, reason)
+               VALUES ('psn_receipt', ?, ?, ?, 'playstation', 'playstation_game', 'PSN receipt (platform implicit)')""",
+            (order, item_key, title),
+        )
+    conn.commit()
+    conn.close()
+
+    assets.owned_games(_ctx(f"sqlite:///{db}", _StubIgdb()))
+    conn = connect(f"sqlite:///{db}")
+    rows = {r["title"]: r for r in conn.execute("SELECT * FROM owned_games").fetchall()}
+    assert rows["HOT WHEELS UNLEASHED™ (Game)"]["ownership_class"] == "psplus_claimed"
+    assert rows["HOT WHEELS UNLEASHED™ (Game)"]["price"] == "$0.00"
+    assert rows["The Witcher 3: Wild Hunt – Complete Edition (Game)"]["ownership_class"] == "psplus_claimed"
+    assert rows["Armello™ (Game)"]["ownership_class"] == "purchased"
+    assert rows["Armello™ (Game)"]["price"] == "$7.49"
+    conn.close()
