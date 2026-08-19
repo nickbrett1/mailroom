@@ -9,6 +9,7 @@ igdb_matches → game_metadata → catalog_views.
 
 import json
 import re
+import sqlite3
 from datetime import UTC, datetime
 
 import httpx
@@ -34,6 +35,7 @@ from mailroom.db import (
     upsert_owned_game,
     upsert_raw_receipt,
 )
+from mailroom.verticals.game_catalog import dedup
 from mailroom.verticals.game_catalog.classifier import Classification, classify_item
 from mailroom.verticals.game_catalog.parsers.psn import (
     normalize_title,
@@ -189,10 +191,17 @@ def psn_api_owned(context: AssetExecutionContext) -> None:
         ).fetchone()
         if exists:
             if exists["platform"] == "playstation" and game["platform"] != "playstation":
-                conn.execute(
-                    "UPDATE owned_games SET platform = ?, updated_at = datetime('now') WHERE id = ?",
-                    (game["platform"], exists["id"]),
-                )
+                try:
+                    conn.execute(
+                        "UPDATE owned_games SET platform = ?, updated_at = datetime('now') WHERE id = ?",
+                        (game["platform"], exists["id"]),
+                    )
+                except sqlite3.IntegrityError:
+                    # dup guard (catalog-dedup-fix): (igdb_id, platform, format)
+                    # already owned elsewhere — the upsert below still merges into
+                    # this row (generic-platform branch); dedupe_owned_games will
+                    # reconcile platform. Don't fail the whole sync.
+                    pass
             confirmed += 1
         else:
             added += 1
@@ -548,7 +557,23 @@ def igdb_matches(context: AssetExecutionContext) -> None:
                    VALUES (?, ?, ?, ?)""",
                 (row["id"], gid, "high" if method == "external_games" else "medium", matched_title),
             )
-            conn.execute("UPDATE owned_games SET igdb_id = ? WHERE id = ?", (gid, row["id"]))
+            try:
+                conn.execute("UPDATE owned_games SET igdb_id = ? WHERE id = ?", (gid, row["id"]))
+            except sqlite3.IntegrityError:
+                # Dedup guard (catalog-dedup-fix): another OWNED row already has
+                # this (igdb_id, platform, format) — collapse this row into it
+                # instead of leaving a duplicate (a receipt row matched after its
+                # API row, or two receipts of the same game).
+                other = conn.execute(
+                    """SELECT * FROM owned_games
+                       WHERE is_owned = 1 AND igdb_id = ? AND platform = ? AND format = ? AND id != ?""",
+                    (gid, row["platform"], row["format"], row["id"]),
+                ).fetchone()
+                this = conn.execute("SELECT * FROM owned_games WHERE id = ?", (row["id"],)).fetchone()
+                if other and this and this["is_owned"]:
+                    dedup.merge_group(conn, [this, other])
+                else:
+                    raise
             matched += 1
         else:
             unmatched += 1
@@ -557,7 +582,28 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     context.log.info(f"igdb_matches: {matched} matched, {unmatched} unmatched")
 
 
-@asset(deps=[igdb_matches], required_resource_keys={"db_url", "igdb"})
+@asset(deps=[igdb_matches], required_resource_keys={"db_url"})
+def dedupe_owned_games(context: AssetExecutionContext) -> None:
+    """Collapse duplicate owned_games rows by IGDB match (idempotent).
+
+    Runs after every enrichment pass: matched rows merge on
+    (igdb_id, platform, format), unmatched on (normalized_title, platform,
+    format). Winners keep every provenance (JSON list); losers are retired
+    (is_owned=0, retire_reason='dup_merged:game_id=<winner>'), never deleted.
+    Possible double purchases (distinct order numbers) are flagged to the
+    review queue, not silently merged (memos/catalog-dedup-fix).
+    """
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    report = dedup.dedupe_owned_games(conn)
+    conn.close()
+    context.log.info(
+        f"dedupe_owned_games: {report.groups} groups merged, {report.retired} rows retired, "
+        f"{len(report.review_flags)} review flags"
+    )
+
+
+@asset(deps=[dedupe_owned_games], required_resource_keys={"db_url", "igdb"})
 def game_metadata(context: AssetExecutionContext) -> None:
     """IGDB details per matched game (covers/genres/rating/release). Paced,
     resumable (skips ids already fetched); on-demand only, not scheduled."""

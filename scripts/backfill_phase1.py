@@ -156,7 +156,11 @@ def report(db_url: str) -> None:
         print(f"  {r['format']:9s} {r['retailer'] or '-'!s:11s} {r['n']}")
     d = conn.execute("SELECT COUNT(*) n FROM owned_games WHERE is_owned=1 AND format='digital'").fetchone()["n"]
     p = conn.execute("SELECT COUNT(*) n FROM owned_games WHERE is_owned=1 AND format='physical'").fetchone()["n"]
-    dupe = conn.execute("SELECT COUNT(*) n FROM owned_games WHERE is_owned=1 AND format='physical' AND provenance LIKE '%;%'").fetchone()["n"]
+    dupe = conn.execute(
+        """SELECT COUNT(*) n FROM owned_games
+           WHERE is_owned=1 AND format='physical'
+             AND (provenance LIKE '%;%' OR json_array_length(provenance) > 1)"""
+    ).fetchone()["n"]
     print(f"  TOTAL owned: {d + p}  (digital {d}, physical {p})")
     print(f"  distinct titles: {conn.execute('SELECT COUNT(DISTINCT normalized_title) n FROM owned_games WHERE is_owned=1').fetchone()['n']}")
     print(f"  physical rows with multi-source provenance (merged/deduped): {dupe}")
