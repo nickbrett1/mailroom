@@ -45,3 +45,36 @@ def test_definitions_load():
     resources = definitions.get_repository_def().get_top_level_resources()
     assert "msgvault" in resources
     assert "igdb" in resources
+
+
+def test_schedules_and_jobs_registered():
+    """The catalog must self-update: daily email->enrichment chain, weekly PSN
+    sync with the enrichment tail, and a manual full-recheck job."""
+    repo = definitions.get_repository_def()
+    job_names = {j.name for j in repo.get_all_jobs()}
+    assert "catalog_daily" in job_names
+    assert "psn_sync" in job_names
+    assert "catalog_recheck" in job_names
+
+    schedules = {s.name: s for s in repo.schedule_defs}
+    assert schedules["catalog_daily_schedule"].cron_schedule == "0 6 * * *"
+    assert schedules["psn_sync_schedule"].cron_schedule == "0 21 * * 2"
+
+    # daily: the full email chain + incremental enrichment (no psn_api_owned)
+    daily = definitions.get_job_def("catalog_daily")
+    daily_keys = {k.to_user_string() for k in daily.asset_layer.selected_asset_keys}
+    assert {"raw_psn_receipts", "owned_games", "igdb_matches", "dedupe_owned_games",
+            "game_metadata", "catalog_views"} <= daily_keys
+    assert "psn_api_owned" not in daily_keys
+
+    # weekly: PSN sync + enrichment tail (no email receipts)
+    sync = definitions.get_job_def("psn_sync")
+    sync_keys = {k.to_user_string() for k in sync.asset_layer.selected_asset_keys}
+    assert {"psn_api_owned", "igdb_matches", "dedupe_owned_games", "game_metadata",
+            "catalog_views"} <= sync_keys
+    assert "raw_psn_receipts" not in sync_keys
+
+    # full recheck stays manual + recheck-only
+    recheck = definitions.get_job_def("catalog_recheck")
+    recheck_keys = {k.to_user_string() for k in recheck.asset_layer.selected_asset_keys}
+    assert {"igdb_matches", "game_metadata", "catalog_views"} <= recheck_keys
