@@ -3,16 +3,20 @@
 All writes go through mailroom (single-writer rule): the frontend never
 touches the SQLite store directly. This FastAPI service (separate process,
 same image, Tailscale-only) exposes the manual-edit endpoints the catalog UI
-uses — today: resolving ambiguous/unmatched IGDB matches.
+uses — today: resolving ambiguous/unmatched IGDB matches and the dedup
+review queue (possible double purchases, memos/catalog-dedup-fix).
 
 Endpoints:
-  GET  /manual/needs-match   -> list of owned games without an igdb_id
-  POST /manual/igdb-match    -> {owned_game_id, igdb_id, note?} apply a match
+  GET  /manual/needs-match           -> owned games without an igdb_id
+  POST /manual/igdb-match            -> {owned_game_id, igdb_id, note?} apply a match
+  GET  /manual/review-queue          -> open (or all) dedup/manual review flags
+  POST /manual/review-queue/{id}/resolve -> {decision, note?} adjudicate a flag
   GET  /health
 """
 
 from __future__ import annotations
 
+import json
 import os
 
 from fastapi import FastAPI, HTTPException
@@ -38,6 +42,11 @@ class PsnCredentialRequest(BaseModel):
     npsso: str
 
 
+class ReviewResolveRequest(BaseModel):
+    decision: str  # e.g. 'double_purchase' | 'same_purchase' | 'not_a_duplicate'
+    note: str | None = None
+
+
 def _conn():
     conn = connect(_db_url())
     init_db(conn)
@@ -61,6 +70,68 @@ def needs_match(limit: int = 100) -> list[dict]:
             (min(limit, 500),),
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@app.get("/manual/review-queue")
+def review_queue(status: str = "open", limit: int = 100) -> list[dict]:
+    """Review flags for human adjudication — possible double purchases surfaced
+    by the dedup pass, plus manual-match resolutions (memos/catalog-dedup-fix).
+
+    status: 'open' (default) | 'resolved' | 'all'.
+    """
+    conn = _conn()
+    try:
+        if status == "all":
+            where = ""
+        elif status == "resolved":
+            where = "WHERE status = 'resolved'"
+        else:
+            where = "WHERE status = 'open'"
+        rows = conn.execute(
+            f"""SELECT id, source, order_number, title, reason, payload, status, created_at
+                FROM review_queue {where}
+                ORDER BY status = 'open' DESC, id DESC LIMIT ?""",
+            (min(limit, 500),),
+        ).fetchall()
+        out = []
+        for r in rows:
+            item = dict(r)
+            try:
+                item["payload"] = json.loads(r["payload"]) if r["payload"] else {}
+            except (ValueError, TypeError):
+                item["payload"] = r["payload"] or ""
+            out.append(item)
+        return out
+    finally:
+        conn.close()
+
+
+@app.post("/manual/review-queue/{flag_id}/resolve")
+def resolve_review_flag(flag_id: int, req: ReviewResolveRequest) -> dict:
+    """Adjudicate a review flag (e.g. 'same_purchase' — the two receipts were
+    the same purchase re-parsed, so the merge was correct; 'double_purchase' —
+    a genuine duplicate buy, keep as-is). Marks it resolved with the decision
+    recorded on the flag (audit trail)."""
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM review_queue WHERE id = ?", (flag_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, f"no review flag with id {flag_id}")
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+        except (ValueError, TypeError):
+            payload = {"raw": row["payload"]}
+        payload["decision"] = req.decision
+        if req.note:
+            payload["note"] = req.note
+        conn.execute(
+            "UPDATE review_queue SET status = 'resolved', payload = ? WHERE id = ?",
+            (json.dumps(payload), flag_id),
+        )
+        conn.commit()
+        return {"id": flag_id, "status": "resolved", "decision": req.decision, "payload": payload}
     finally:
         conn.close()
 
