@@ -37,6 +37,7 @@ from mailroom.verticals.game_catalog.assets import (
     parsed_purchases_digital,
     parsed_purchases_physical,
     psn_api_owned,
+    psn_playtime,
     raw_psn_receipts,
     raw_retailer_receipts,
 )
@@ -76,6 +77,7 @@ psn_sync_job = define_asset_job(
     "psn_sync",
     selection=AssetSelection.keys(
         "psn_api_owned",
+        "psn_playtime",
         "igdb_matches",
         "dedupe_owned_games",
         "game_metadata",
@@ -115,6 +117,7 @@ definitions = Definitions(
         classified_game_items,
         owned_games,
         psn_api_owned,
+        psn_playtime,
         igdb_matches,
         dedupe_owned_games,
         catalog_quality_repairs,

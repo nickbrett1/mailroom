@@ -122,6 +122,18 @@ CREATE INDEX IF NOT EXISTS idx_owned_games_platform ON owned_games(platform);
 -- (The DDL lives in _ensure_dedup_index, not here, so a fresh CREATE UNIQUE
 -- INDEX on an already-dirty table doesn't fail init_db.)
 
+-- PSN trophy/playtime stats per content id (psn_playtime asset). Keyed on
+-- psn_content_id (npCommunicationId) so it joins owned_games 1:1 per SKU.
+CREATE TABLE IF NOT EXISTS game_stats (
+    psn_content_id TEXT PRIMARY KEY,
+    playtime_minutes INTEGER,
+    trophies_earned INTEGER,
+    trophies_defined INTEGER,
+    progress REAL,
+    last_update TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
 -- IGDB match results with confidence.
 CREATE TABLE IF NOT EXISTS igdb_matches (
     owned_game_id INTEGER NOT NULL,
@@ -168,9 +180,20 @@ SELECT
     CAST(json_extract(m.payload, '$.first_release_date') AS INTEGER) AS release_ts,
     json_extract(m.payload, '$.cover.url') AS cover_url,
     (SELECT group_concat(json_extract(j.value, '$.name'), ', ')
-       FROM json_each(m.payload, '$.genres') j) AS genres
+       FROM json_each(m.payload, '$.genres') j) AS genres,
+    s.playtime_minutes AS playtime_minutes,
+    CASE WHEN s.playtime_minutes IS NOT NULL
+         THEN CAST(ROUND(s.playtime_minutes / 60.0, 1) AS REAL) END AS hours_played,
+    s.trophies_earned AS trophies_earned,
+    s.trophies_defined AS trophies_defined,
+    s.progress AS trophy_progress
 FROM owned_games g
 LEFT JOIN game_metadata m ON m.igdb_id = g.igdb_id
+-- Playtime/trophies from the Trophy API, keyed on the FIRST content id when a
+-- merged row carries several (per-SKU stats; the row's primary SKU is first).
+LEFT JOIN game_stats s ON s.psn_content_id = COALESCE(
+    NULLIF(substr(g.psn_content_id, 1, instr(g.psn_content_id, ',') - 1), ''),
+    g.psn_content_id)
 WHERE g.is_owned = 1;
 
 -- Source authentication (PSN PS-App OAuth refresh token, future API sources).

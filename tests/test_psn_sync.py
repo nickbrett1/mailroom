@@ -175,14 +175,20 @@ def test_credential_helpers_and_owned_games_migration():
 
 
 class _StubPsn:
-    def __init__(self, titles, error=None):
+    def __init__(self, titles, error=None, trophies=None):
         self.titles = titles
         self.error = error
+        self.trophies = trophies if trophies is not None else []
 
     def library_titles(self):
         if self.error:
             raise self.error
         return self.titles
+
+    def trophy_titles(self):
+        if self.error:
+            raise self.error
+        return self.trophies
 
 
 def _ctx(db_url, stub):
@@ -209,6 +215,110 @@ def test_psn_api_owned_auth_error_degrades():
     cred = get_credential(conn, "psn")
     assert cred["status"] == "needs_refresh"
     assert "rejected" in (cred["last_error"] or "")
+    conn.close()
+
+
+TROPHY_ITEMS = [
+    {
+        "npCommunicationId": "UP9000-CUSA07408_00-00000000GODOFWAR",
+        "trophyTitleName": "God of War",
+        "trophyTitlePlatform": "PS4",
+        "playDuration": "PT24H15M",
+        "earnedTrophies": {"bronze": 24, "silver": 7, "gold": 5, "platinum": 1, "total": 37},
+        "definedTrophies": {"bronze": 24, "silver": 7, "gold": 5, "platinum": 1, "total": 37},
+        "progress": 100,
+        "lastUpdateDate": "2023-01-15T00:00:00Z",
+    },
+    {
+        "npCommunicationId": "UP9000-CUSA12345_00-SOMEEXTRAGAME",
+        "trophyTitleName": "Some Extra Catalog Game",
+        "trophyTitlePlatform": "PS5",
+        # no playDuration -> never played
+        "earnedTrophies": {"bronze": 0, "silver": 0, "gold": 0, "platinum": 0, "total": 0},
+        "definedTrophies": {"bronze": 10, "silver": 5, "gold": 3, "platinum": 1, "total": 19},
+        "progress": 0,
+    },
+]
+
+
+def test_trophy_titles_exchanges_token_and_paginates():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/oauth/token"):
+            return httpx.Response(200, json=REFRESH_BODY)
+        if "trophyTitles" in request.url.path:
+            calls["n"] += 1
+            offset = int(request.url.params["offset"])
+            page = TROPHY_ITEMS[offset : offset + 1]
+            return httpx.Response(200, json={"totalResults": 2, "trophyTitles": page})
+        return httpx.Response(404)
+
+    client = _psn_client(handler)
+    titles = client.trophy_titles()
+    assert calls["n"] == 2  # paginated 1 at a time
+    assert len(titles) == 2
+    assert titles[0]["npCommunicationId"] == "UP9000-CUSA07408_00-00000000GODOFWAR"
+    assert titles[0]["playDuration"] == "PT24H15M"
+
+
+def test_trophy_item_normalization():
+    from mailroom.clients import iso8601_duration_minutes, psn_trophy_item_to_stats
+
+    assert iso8601_duration_minutes("PT24H15M") == 24 * 60 + 15
+    assert iso8601_duration_minutes("PT0M") == 0
+    assert iso8601_duration_minutes(None) is None
+    assert iso8601_duration_minutes("") is None
+    assert iso8601_duration_minutes("garbage") is None
+
+    s = psn_trophy_item_to_stats(TROPHY_ITEMS[0])
+    assert s["psn_content_id"] == "UP9000-CUSA07408_00-00000000GODOFWAR"
+    assert s["playtime_minutes"] == 1455
+    assert s["trophies_earned"] == 37
+    assert s["trophies_defined"] == 37
+    assert s["progress"] == 100
+    assert psn_trophy_item_to_stats({"no": "id"}) is None
+
+
+def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    from mailroom.db import set_credential, upsert_owned_game
+
+    set_credential(conn, "psn", token="rt-123")
+    upsert_owned_game(
+        conn,
+        {
+            "title": "God of War", "normalized_title": "god of war",
+            "platform": "playstation 4", "format": "digital",
+            "ownership_class": "purchased", "retailer": None,
+            "order_number": None, "item_id": None, "condition": None,
+            "psn_content_id": "UP9000-CUSA07408_00-00000000GODOFWAR",
+            "igdb_id": 19560, "acquisition_date": None, "price": None,
+            "source": "psn_api", "source_ref": "UP9000-CUSA07408_00-00000000GODOFWAR",
+            "status": "owned", "is_owned": 1,
+            "provenance": "psn_api:UP9000-CUSA07408_00-00000000GODOFWAR",
+        },
+    )
+    conn.close()
+
+    assets.psn_playtime(_ctx(f"sqlite:///{db}", _StubPsn([], trophies=TROPHY_ITEMS)))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM game_stats").fetchone()
+    assert row["playtime_minutes"] == 1455
+    assert row["trophies_earned"] == 37
+    assert row["progress"] == 100
+
+    v = conn.execute("SELECT title, hours_played, playtime_minutes, trophy_progress FROM catalog_views").fetchone()
+    assert v["title"] == "God of War"
+    assert v["hours_played"] == 24.3  # 1455 / 60 = 24.25 -> ROUND(...,1)
+    assert v["playtime_minutes"] == 1455
+    assert v["trophy_progress"] == 100
+
+    # re-run is an upsert (idempotent, count stays 2)
+    assets.psn_playtime(_ctx(f"sqlite:///{db}", _StubPsn([], trophies=TROPHY_ITEMS)))
+    assert conn.execute("SELECT COUNT(*) n FROM game_stats").fetchone()["n"] == 2
     conn.close()
 
 
