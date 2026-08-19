@@ -73,6 +73,39 @@ def test_apply_match_then_no_longer_needed(client):
     conn.close()
 
 
+def test_review_queue_lists_and_resolves_flags(client):
+    """Dedup review flags (possible double purchases) are visible and
+    adjudicable via the manual API; resolution is recorded on the flag."""
+    from mailroom.db import connect
+
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    conn.execute(
+        """INSERT INTO review_queue(source, order_number, title, reason, payload, status)
+           VALUES ('dedup', '263932697921', 'The Witcher 3: Wild Hunt', 'possible_double_purchase',
+                   '{"orders": ["263932697921", "384720390939"], "winner_id": 5}', 'open')"""
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/manual/review-queue")
+    assert res.status_code == 200
+    flags = res.json()
+    assert len(flags) == 1
+    assert flags[0]["reason"] == "possible_double_purchase"
+    assert flags[0]["status"] == "open"
+    assert flags[0]["payload"]["orders"] == ["263932697921", "384720390939"]
+
+    flag_id = flags[0]["id"]
+    res = client.post(f"/manual/review-queue/{flag_id}/resolve", json={"decision": "same_purchase", "note": "re-parse"})
+    assert res.status_code == 200
+    assert res.json()["status"] == "resolved"
+    assert res.json()["payload"]["decision"] == "same_purchase"
+
+    assert client.get("/manual/review-queue").json() == []  # open list empty
+    assert len(client.get("/manual/review-queue", params={"status": "all"}).json()) == 1
+    assert client.post("/manual/review-queue/9999/resolve", json={"decision": "x"}).status_code == 404
+
+
 def test_apply_unknown_game_404(client):
     res = client.post("/manual/igdb-match", json={"owned_game_id": 9999, "igdb_id": 1})
     assert res.status_code == 404
