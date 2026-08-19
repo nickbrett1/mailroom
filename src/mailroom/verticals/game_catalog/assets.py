@@ -14,7 +14,6 @@ from datetime import UTC, datetime
 import httpx
 from dagster import (
     AssetExecutionContext,
-    DailyPartitionsDefinition,
     Field,
     asset,
 )
@@ -43,8 +42,6 @@ from mailroom.verticals.game_catalog.parsers.psn import (
 from mailroom.verticals.game_catalog.sources import RETAILER_SOURCES, parse_source
 
 # Partitioned by day so incremental runs and backfills are per-slice.
-DAILY = DailyPartitionsDefinition(start_date="2024-01-01")
-
 # PSN receipt senders across the archive eras (verified 2026-08-16):
 # sony@… 2012→2022-12; reply@txn-email.playstation.com + sony@txn-email03… 2022→present.
 PSN_SENDERS = (
@@ -59,7 +56,7 @@ PSN_SENDERS = (
 DIGITAL_SOURCES = {"psn_receipt", "cdkeys", "gameflip"}
 
 
-@asset(partitions_def=DAILY, required_resource_keys={"db_url", "msgvault"})
+@asset(required_resource_keys={"db_url", "msgvault"})
 def raw_psn_receipts(context: AssetExecutionContext) -> None:
     """Fetch new PSN receipts from msgvault since the cursor and store raw."""
     conn = connect(context.resources.db_url)
@@ -98,7 +95,7 @@ def raw_psn_receipts(context: AssetExecutionContext) -> None:
     conn.close()
 
 
-@asset(partitions_def=DAILY, deps=[raw_psn_receipts], required_resource_keys={"db_url"})
+@asset(deps=[raw_psn_receipts], required_resource_keys={"db_url"})
 def parsed_purchases_digital(context: AssetExecutionContext) -> None:
     """Parse stored PSN receipts into normalized purchases."""
     conn = connect(context.resources.db_url)
@@ -321,7 +318,7 @@ def parsed_purchases_physical(context: AssetExecutionContext) -> None:
     context.log.info(f"parsed {parsed} retailer receipts")
 
 
-@asset(partitions_def=DAILY, deps=[parsed_purchases_digital, parsed_purchases_physical], required_resource_keys={"db_url"})
+@asset(deps=[parsed_purchases_digital, parsed_purchases_physical], required_resource_keys={"db_url"})
 def classified_game_items(context: AssetExecutionContext) -> None:
     """Classify parsed items (digital + physical) through the platform gate;
     ambiguous → review queue."""
@@ -358,7 +355,7 @@ def classified_game_items(context: AssetExecutionContext) -> None:
     conn.close()
 
 
-@asset(partitions_def=DAILY, deps=[classified_game_items], required_resource_keys={"db_url"})
+@asset(deps=[classified_game_items], required_resource_keys={"db_url"})
 def owned_games(context: AssetExecutionContext) -> None:
     """Merge classified PlayStation items into the definitive store."""
     conn = connect(context.resources.db_url)
