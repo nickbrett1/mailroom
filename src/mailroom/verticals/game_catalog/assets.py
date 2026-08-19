@@ -513,6 +513,12 @@ def _igdb_search_tokens(term: str) -> set[str]:
     return set(re.findall(r"[a-z0-9]+", t))
 
 
+def _igdb_name_compact(name: str) -> str:
+    """Space-less lowercase name ('Coffee Talk' -> 'coffeetalk') — lets a
+    concatenated PSN title ('CoffeeTalk') match its space-separated IGDB name."""
+    return re.sub(r"\s+", "", _igdb_norm(name))
+
+
 _EDITION_WORDS = (
     "standard edition", "deluxe edition", "ultimate edition", "launch edition",
     "collector's edition", "collectors edition", "game of the year edition",
@@ -526,11 +532,14 @@ def igdb_search_term(title: str) -> str:
     """Strip platform/edition/marketplace noise for an IGDB name search."""
     t = re.sub(r"\([^)]*\)", " ", title)   # (PS5), (US), (Game)
     t = re.sub(r"\[[^\]]*\]", " ", t)      # [Devolver Deluxe]
+    # ™/®/© FIRST: NFKD below would decompose ™ -> 'TM' ('PS5™' -> 'PS5TM'),
+    # poisoning the search term.
+    t = re.sub(r"[™®©]", " ", t)
     import unicodedata
 
     t = unicodedata.normalize("NFKD", t)  # é -> e, û -> u (keeps accented titles searchable)
     t = re.sub(r"[\u0300-\u036f]", "", t)  # combining marks
-    t = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u2300-\u23FF]", " ", t)  # emoji/dingbats
+    t = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u2300-\u23FF\u2200-\u22FF]", " ", t)  # emoji/dingbats/math symbols (ZONE OF THE ENDERS …M∀RS)
     t = re.split(r"\s+w/", t)[0]           # drop eBay 'w/ <variant>' suffixes
     t = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45])\b", " ", t, flags=re.IGNORECASE)
     # Edition phrases FIRST (they contain stopwords — 'standard edition' must
@@ -539,7 +548,7 @@ def igdb_search_term(title: str) -> str:
     for w in _EDITION_WORDS:
         t = re.sub(rf"\b{re.escape(w)}\b", " ", t, flags=re.IGNORECASE)
     t = re.sub(r"\b(?:a|an|the|and|for|of|on|with|us|edition)\b", " ", t, flags=re.IGNORECASE)
-    t = re.sub(r"\b(?:sealed|sony|new|brand new)\b", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b(?:sealed|sony|new|brand new|gamestop)\b", " ", t, flags=re.IGNORECASE)
     t = re.sub(r"\s+", " ", t).strip(" -–—:;").lower()
     return t[:80] or title[:80].lower()
 
@@ -573,22 +582,37 @@ def _pick_igdb_result(title: str, results: list[dict], platform: str, term: str 
     """Pick the best IGDB result for a title, or None to leave it unmatched.
 
     1. EXACT-name results win (platform-preferred among same-name entries).
-    2. Otherwise a result is acceptable only when the search term's significant
-       tokens ALL appear in its normalized name — and only when the term has
-       >= 2 significant tokens. Single-token titles ('Unplugged', 'GODS'-class)
-       are too ambiguous to auto-pick: the wrong-but-popular entry ('Rock Band
-       Unplugged', 'God of War Ragnarök') would win.
+    2. Otherwise a result is acceptable when the search term's significant
+       tokens ALL appear in its normalized name (forward containment) — the
+       space-less form also counts so 'CoffeeTalk' ~ 'Coffee Talk'.
+    3. When the term has >= 2 tokens, a result whose tokens are a SUBSET of
+       the term is also acceptable — the receipt title carries extra words
+       ('Unplugged - Air Guitar (Game)' -> 'Unplugged').
+
+    The single-token case is deliberately NOT guarded here: 'Skyrim' must
+    match 'The Elder Scrolls V: Skyrim' and 'Skul' -> 'Skul: The Hero Slayer'.
+    Truly ambiguous short titles ('Unplugged' -> 'Rock Band Unplugged') are
+    pinned by content id in catalog_quality_repairs, which runs after
+    igdb_matches in the same job — the read model never shows the wrong pick.
     """
     exact = [r for r in results if _igdb_name_matches(title, r.get("name"))]
     if exact:
         return next((r for r in exact if _igdb_platform_matches(r.get("platforms") or [], platform)), exact[0])
-    tokens = _igdb_search_tokens(term or igdb_search_term(title))
-    if len(tokens) < 2:
-        return None  # ambiguous short title — leave for manual review
-    candidates = [
-        r for r in results
-        if tokens <= _igdb_search_tokens(_igdb_norm(r.get("name") or ""))
-    ]
+    term = term or igdb_search_term(title)
+    tokens = _igdb_search_tokens(term)
+    if not tokens:
+        return None
+    single = len(tokens) == 1
+    candidates = []
+    for r in results:
+        name = r.get("name") or ""
+        name_tokens = _igdb_search_tokens(_igdb_norm(name))
+        if not name_tokens:
+            continue
+        if tokens <= name_tokens or (single and _igdb_name_compact(name) == term):
+            candidates.append(r)  # forward: term appears in the name
+        elif not single and name_tokens <= tokens:  # reverse: name is a subset of the title's words
+            candidates.append(r)
     if not candidates:
         return None
     return next((r for r in candidates if _igdb_platform_matches(r.get("platforms") or [], platform)), candidates[0])
