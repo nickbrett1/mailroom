@@ -763,9 +763,9 @@ def catalog_quality_repairs(context: AssetExecutionContext) -> None:
     conn.close()
     context.log.info(
         f"catalog_quality_repairs: retired {len(report.retired)}, split {len(report.split)}, "
-        f"rematched {len(report.rematched)}, skipped {len(report.skipped)}"
+        f"rematched {len(report.rematched)}, merged {len(report.merged)}, skipped {len(report.skipped)}"
     )
-    for r in report.retired + report.split + report.rematched:
+    for r in report.retired + report.split + report.rematched + report.merged:
         context.log.info(f"  repair: {r}")
     for r in report.skipped:
         context.log.warning(f"  repair skipped (needs review): {r}")

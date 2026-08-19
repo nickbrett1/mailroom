@@ -256,6 +256,97 @@ def test_splits_ffvii_remake_jam_with_psplus_class():
     conn.close()
 
 
+def test_splits_valkyria_wrong_igdb_jam():
+    """Two DIFFERENT games (Valkyria Chronicles 4 + Remastered) were merged
+    into one row by a wrong IGDB match (both receipts under igdb 75848).
+    The repair splits them back: VC4 keeps the row + API cid, Remastered gets
+    a fresh row; both igdb=NULL for the next matcher pass. Idempotent."""
+    conn, _ = _db()
+    jammed = _seed(
+        conn,
+        title="Valkyria Chronicles 4",
+        platform="playstation 4",
+        psn_content_id="UP0177-CUSA10633_00-BFVALKYRIE000100",
+        igdb_id=75848,
+        provenance=json.dumps(
+            ["psn_receipt:507107929603:0", "psn_receipt:411948960000:0",
+             "psn_api:UP0177-CUSA10633_00-BFVALKYRIE000100"]
+        ),
+    )
+    report = apply_catalog_repairs(conn)
+    assert len(report.split) == 2
+
+    rows = conn.execute("SELECT * FROM owned_games WHERE is_owned = 1 ORDER BY id").fetchall()
+    assert len(rows) == 2
+    by_title = {r["title"]: r for r in rows}
+    vc4 = by_title["Valkyria Chronicles 4"]
+    rem = by_title["Valkyria Chronicles Remastered"]
+    assert vc4["id"] == jammed
+    assert vc4["igdb_id"] is None  # left for the matcher
+    assert "psn_receipt:507107929603" not in vc4["provenance"]
+    assert "psn_receipt:411948960000" in vc4["provenance"]
+    assert vc4["price"] == "$5.99"
+    assert rem["id"] != jammed
+    assert rem["igdb_id"] is None
+    assert rem["provenance"] == json.dumps(["psn_receipt:507107929603:0"])
+    assert rem["price"] == "$4.99"
+
+    # idempotent
+    apply_catalog_repairs(conn)
+    assert len(conn.execute("SELECT * FROM owned_games WHERE is_owned = 1").fetchall()) == 2
+
+
+def test_merges_gamekey_purchase_as_provenance():
+    """A gameflip key purchase the classifier couldn't platform-pin (seller
+    title lacks a platform token) merges into the already-owned game as
+    provenance; the flag resolves. Title overrides handle seller variants."""
+    conn, _ = _db()
+    _seed(conn, title="Desperados III (Game)", platform="playstation 4",
+          source="psn_receipt", order_number="o-psn-1",
+          provenance="psn_receipt:o-psn-1:0")
+    _seed(conn, title="Republique", platform="playstation 4",
+          provenance="psn_api:UP1234-CUSA00001_00-REPUBLIQUE0000")
+    conn.execute(
+        """INSERT INTO review_queue(source, order_number, title, reason, payload, status)
+           VALUES ('gameflip', 'gf-1', 'Desperados III', 'platform ambiguous',
+                   ?, 'open')""",
+        (json.dumps({"item_key": "gf-1:0", "price": "$12.99"}),),
+    )
+    conn.execute(
+        """INSERT INTO review_queue(source, order_number, title, reason, payload, status)
+           VALUES ('gameflip', 'gf-2', 'Republique Remastered', 'platform ambiguous',
+                   ?, 'open')""",
+        (json.dumps({"item_key": "gf-2:0", "price": "$8.99"}),),
+    )
+    conn.execute(
+        """INSERT INTO review_queue(source, order_number, title, reason, payload, status)
+           VALUES ('woot', 'w-1', 'Blaze Evercade Tomb Raider Collection 1', 'platform ambiguous',
+                   ?, 'open')""",
+        (json.dumps({"item_key": "w-1:0"}),),
+    )
+    conn.commit()
+
+    report = apply_catalog_repairs(conn)
+    assert len(report.merged) == 2
+
+    rows = {r["title"]: r for r in conn.execute("SELECT * FROM owned_games WHERE is_owned = 1").fetchall()}
+    assert "gameflip:gf-1:0" in rows["Desperados III (Game)"]["provenance"]
+    assert rows["Desperados III (Game)"]["price"] == "$12.99"
+    assert "gameflip:gf-2:0" in rows["Republique"]["provenance"]
+    assert rows["Republique"]["price"] == "$8.99"
+
+    statuses = dict(conn.execute("SELECT title, status FROM review_queue").fetchall())
+    assert statuses["Desperados III"] == "resolved"
+    assert statuses["Republique Remastered"] == "resolved"
+    assert statuses["Blaze Evercade Tomb Raider Collection 1"] == "open"  # skipped (non-PS)
+
+    # idempotent: re-run adds nothing
+    before = conn.execute("SELECT provenance FROM owned_games WHERE title = 'Desperados III (Game)'").fetchone()[0]
+    apply_catalog_repairs(conn)
+    after = conn.execute("SELECT provenance FROM owned_games WHERE title = 'Desperados III (Game)'").fetchone()[0]
+    assert before == after
+
+
 def test_generic_split_via_psn_dump_for_unknown_ids():
     """Content ids not in SPLIT_OVERRIDES still split when the bundled PSN
     dump knows their titles — new rows get igdb NULL (next igdb_matches pass)
