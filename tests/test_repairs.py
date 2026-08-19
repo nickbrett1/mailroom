@@ -177,3 +177,116 @@ def test_repairs_are_idempotent():
     # and no duplicate audit rows
     assert conn.execute("SELECT COUNT(*) n FROM review_queue WHERE source='catalog_repair'").fetchone()["n"] == 5
     conn.close()
+
+
+def test_splits_super_meat_boy_jam():
+    """Super Meat Boy + Super Meat Boy Forever were merged the same way as
+    GODS/Ragnarök — each content id must become its own row with the right
+    IGDB match."""
+    conn, _ = _db()
+    jammed = _seed(
+        conn,
+        title="Super Meat Boy!",
+        platform="playstation 4",
+        psn_content_id="UP1055-CUSA16602_00-SUPERMEATBOYFORE,UP1055-CUSA02845_00-SUPERMEATBOY0000",
+        igdb_id=44129,  # Forever's metadata on the merged row
+        provenance=json.dumps(
+            [
+                "psn_receipt:293544327031:0",
+                "psn_api:UP1055-CUSA16602_00-SUPERMEATBOYFORE",
+                "psn_api:UP1055-CUSA02845_00-SUPERMEATBOY0000",
+                "psn_receipt:786997197463109:0",
+            ]
+        ),
+    )
+    apply_catalog_repairs(conn)
+
+    original = conn.execute(
+        "SELECT * FROM owned_games WHERE psn_content_id = ? AND is_owned = 1",
+        ("UP1055-CUSA02845_00-SUPERMEATBOY0000",),
+    ).fetchone()
+    forever = conn.execute(
+        "SELECT * FROM owned_games WHERE psn_content_id = ? AND is_owned = 1",
+        ("UP1055-CUSA16602_00-SUPERMEATBOYFORE",),
+    ).fetchone()
+    assert original is not None and forever is not None
+    assert original["title"] == "Super Meat Boy"
+    assert original["igdb_id"] == 885
+    assert forever["title"] == "Super Meat Boy Forever"
+    assert forever["igdb_id"] == 44129
+    assert original["id"] != forever["id"] and original["id"] != jammed or forever["id"] != jammed
+    conn.close()
+
+
+def test_splits_ffvii_remake_jam_with_psplus_class():
+    """FINAL FANTASY VII + FINAL FANTASY VII REMAKE were merged; the Remake
+    was a PS+ Essential claim ($0 receipt) so its split row must be
+    psplus_claimed."""
+    conn, _ = _db()
+    _seed(
+        conn,
+        title="FINAL FANTASY VII",
+        platform="playstation 4",
+        psn_content_id="UP0082-CUSA07211_00-FFVIIREMAKE00000,UP0082-CUSA01875_00-FINALFANTASY7ZZZ",
+        igdb_id=207026,
+        provenance=json.dumps(
+            [
+                "psn_receipt:253086790958:0",
+                "psn_api:UP0082-CUSA07211_00-FFVIIREMAKE00000",
+                "psn_api:UP0082-CUSA01875_00-FINALFANTASY7ZZZ",
+            ]
+        ),
+    )
+    apply_catalog_repairs(conn)
+
+    remake = conn.execute(
+        "SELECT * FROM owned_games WHERE psn_content_id = ? AND is_owned = 1",
+        ("UP0082-CUSA07211_00-FFVIIREMAKE00000",),
+    ).fetchone()
+    orig = conn.execute(
+        "SELECT * FROM owned_games WHERE psn_content_id = ? AND is_owned = 1",
+        ("UP0082-CUSA01875_00-FINALFANTASY7ZZZ",),
+    ).fetchone()
+    assert remake is not None and orig is not None
+    assert remake["title"] == "FINAL FANTASY VII REMAKE"
+    assert remake["igdb_id"] == 11169
+    assert remake["ownership_class"] == "psplus_claimed"
+    assert orig["title"] == "FINAL FANTASY VII"
+    assert orig["igdb_id"] == 207026
+    conn.close()
+
+
+def test_generic_split_via_psn_dump_for_unknown_ids():
+    """Content ids not in SPLIT_OVERRIDES still split when the bundled PSN
+    dump knows their titles — new rows get igdb NULL (next igdb_matches pass)
+    and an audit note to verify."""
+    conn, _ = _db()
+    _seed(
+        conn,
+        title="Mystery Merged Game",
+        platform="playstation 4",
+        psn_content_id="UP9000-CUSA08010_00-DREAMS0000000000,UP9000-CUSA07408_00-00000000GODOFWAR",
+        igdb_id=None,
+        provenance=json.dumps(
+            [
+                "psn_api:UP9000-CUSA08010_00-DREAMS0000000000",
+                "psn_api:UP9000-CUSA07408_00-00000000GODOFWAR",
+            ]
+        ),
+    )
+    apply_catalog_repairs(conn)
+
+    dreams = conn.execute(
+        "SELECT * FROM owned_games WHERE psn_content_id = ? AND is_owned = 1",
+        ("UP9000-CUSA08010_00-DREAMS0000000000",),
+    ).fetchone()
+    gow = conn.execute(
+        "SELECT * FROM owned_games WHERE psn_content_id = ? AND is_owned = 1",
+        ("UP9000-CUSA07408_00-00000000GODOFWAR",),
+    ).fetchone()
+    assert dreams is not None and gow is not None
+    assert dreams["title"] == "Dreams™"
+    assert dreams["igdb_id"] is None
+    assert gow["title"] == "God of War"
+    assert gow["igdb_id"] is None
+    conn.close()
