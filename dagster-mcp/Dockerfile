@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 RUN pip install --no-cache-dir dagster-mcp
 ENV DAGSTER_URL=http://mailroom:3003 \
-    DAGSTER_READ_ONLY=true \
+    DAGSTER_READ_ONLY=false \
     DAGSTER_MCP_PORT=8770
 EXPOSE 8770
 # Serve the dagster-mcp FastMCP server over streamable HTTP (agents / goose /
