@@ -346,9 +346,11 @@ def test_igdb_matches_multi_term_exact_surfaces_gods_remastered():
     conn.close()
 
 
-def test_igdb_matches_single_token_title_not_blindly_matched():
-    """Unplugged case: a single-token title must NOT auto-link to a
-    wrong-but-popular entry (Rock Band Unplugged) when there's no exact name."""
+def test_igdb_matches_single_token_title_corrected_by_repair():
+    """Unplugged case: the single-token search ranks Rock Band Unplugged first
+    (no exact name in the top results), so igdb_matches alone picks it — the
+    content-id repair that runs after it in the same job must re-pin the VR
+    game (153854). The read model never shows the wrong pick."""
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")
     init_db(conn)
@@ -361,9 +363,12 @@ def test_igdb_matches_single_token_title_not_blindly_matched():
         }
     )
     assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    from mailroom.verticals.game_catalog.repairs import apply_catalog_repairs
+
     conn = connect(f"sqlite:///{db}")
+    apply_catalog_repairs(conn)  # the repair runs after igdb_matches in production
     row = conn.execute("SELECT * FROM owned_games").fetchone()
-    assert row["igdb_id"] is None, "ambiguous short title must stay unmatched (manual review), not Rock Band Unplugged"
+    assert row["igdb_id"] == 153854, "repair must pin Unplugged (VR air guitar), not Rock Band Unplugged"
     conn.close()
 
 
@@ -415,4 +420,93 @@ def test_igdb_matches_roman_numeral_sequel():
     conn = connect(f"sqlite:///{db}")
     row = conn.execute("SELECT * FROM owned_games").fetchone()
     assert row["igdb_id"] == 15854, "must pick the PS4 God of War III Remastered, not the 2010 original"
+    conn.close()
+
+
+def test_igdb_matches_single_token_edition_title():
+    """'Control Ultimate Edition' strips to the single token 'control' — the
+    exact name 'Control' must still match (no blind-fallback regression)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Control Ultimate Edition", platform="playstation 4", source="psn_api")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "control": [
+                {"id": 103329, "name": "Control", "platforms": [48, 167]},
+                {"id": 227808, "name": "Mob Control", "platforms": [34]},
+            ]
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 103329, "single-token term must match the exact-name 'Control'"
+    conn.close()
+
+
+def test_igdb_matches_concatenated_title_matches_spaced_name():
+    """'CoffeeTalk' (PSN concatenates the words) must match IGDB 'Coffee Talk'
+    via the space-less name check."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "CoffeeTalk", platform="playstation 4", source="psn_api")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "coffeetalk": [{"id": 106847, "name": "Coffee Talk", "platforms": [48]}],
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 106847
+    conn.close()
+
+
+def test_igdb_matches_receipt_title_with_extra_words():
+    """'Unplugged - Air Guitar (Game)' (receipt) must match the VR game
+    'Unplugged' via reverse containment (name tokens are a subset of the
+    term), not stay unmatched."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Unplugged - Air Guitar (Game)", platform="playstation", source="psn_receipt")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "unplugged - air guitar": [{"id": 153854, "name": "Unplugged", "platforms": [167]}],
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 153854
+    conn.close()
+
+
+def test_igdb_matches_single_token_matches_longer_name():
+    """'Skyrim' must match 'The Elder Scrolls V: Skyrim' — a single-token term
+    that is a token of a longer canonical name is a valid match (the psn_api
+    short title)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Skyrim", platform="playstation 4", source="psn_api")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "skyrim": [{"id": 13934, "name": "The Elder Scrolls V: Skyrim", "platforms": [48, 167]}],
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 13934
     conn.close()
