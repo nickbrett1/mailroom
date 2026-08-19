@@ -72,14 +72,26 @@ def _parse_order_block(block: str, message_id: str | None) -> Purchase | None:
     )
 
 
-_SUBJECT_ITEM_RE = re.compile(r"order of [\"']?(?P<item>.+?)[\"']?\.?\s*$", re.IGNORECASE)
+# The item must stop at a closing quote — a lazy .+? would swallow the whole
+# tail of a cancellation subject ("...Master Plunger MPS4 Sink...\" has been
+# canceled" -> a bogus 'game' titled with the cancel text).
+_SUBJECT_ITEM_RE = re.compile(r"order of [\"']?(?P<item>[^\"']+?)[\"']?\.?\s*$", re.IGNORECASE)
 # Shipped/delivered subjects end with " has shipped!" / " is out for delivery!" —
 # only the CONFIRMATION ("Your Amazon.com order of ...") carries the item fact.
 _SHIPPED_SUBJECT_RE = re.compile(r"shipped|out for delivery|delivered|arriving|will arrive", re.IGNORECASE)
+# Order-update cancellations/refunds are NOT purchase facts: the item never
+# (or no longer) becomes owned. Amazon subjects: "Your Amazon.com order has
+# been canceled", "Order canceled", "We canceled your order...".
+_CANCEL_SUBJECT_RE = re.compile(r"\bcancel", re.IGNORECASE)
 
 
 def parse_amazon_receipt(body: str, message_id: str | None = None, subject: str | None = None) -> list[Purchase]:
     """Parse an Amazon order email into one Purchase per order block."""
+    # A cancellation email must never become a catalog fact — even though its
+    # body can carry the Order # and item lines (which the block parser would
+    # otherwise turn into an owned 'game').
+    if subject and _CANCEL_SUBJECT_RE.search(subject):
+        return []
     # Split the body at each 'Order #' occurrence; each block is one order.
     starts = [m.start() for m in _ORDER_RE.finditer(body)]
     if not starts:

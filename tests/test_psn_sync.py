@@ -263,3 +263,37 @@ def test_psn_api_owned_merges_and_marks_valid():
     assets.psn_api_owned(ctx)
     assert conn.execute("SELECT COUNT(*) n FROM owned_games").fetchone()["n"] == 3
     conn.close()
+
+
+def test_psn_library_item_to_game_filters_ost_and_artbook():
+    """Dreams OST ('The Music of Dreams', DREAMSOST…) and Dreams Art Book
+    ('The Art of Dreams', DREAMSARTBOOK…) are add-ons, not games — the PSN
+    API library lists them but they must never enter owned_games."""
+    ost = {
+        "id": "UP9000-CUSA18544_00-DREAMSOST0000001",
+        "productId": "UP9000-CUSA18544_00-DREAMSOST0000001",
+        "gameMeta": {"name": "The Music of Dreams", "type": "PS4GD"},
+        "rewardMeta": {"rewardServiceType": 0, "retentionPolicy": 0},
+    }
+    artbook = {
+        "id": "UP9000-CUSA18543_00-DREAMSARTBOOK001",
+        "productId": "UP9000-CUSA18543_00-DREAMSARTBOOK001",
+        "gameMeta": {"name": "The Art of Dreams", "type": "PS4GD"},
+        "rewardMeta": {"rewardServiceType": 0, "retentionPolicy": 0},
+    }
+    assert psn_library_item_to_game(ost) is None
+    assert psn_library_item_to_game(artbook) is None
+
+
+def test_psn_library_item_to_game_keeps_ost_sounding_games():
+    """Word-bounded 'ost' must not filter real games (e.g. 'Ghost of a
+    Tale'... and a title literally containing 'Lost' stays a game)."""
+    game = {
+        "id": "UP0001-CUSA00002_00-LOSTGAME0000001",
+        "productId": "UP0001-CUSA00002_00-LOSTGAME0000001",
+        "gameMeta": {"name": "Lost", "type": "PS4GD"},
+        "rewardMeta": {"rewardServiceType": 0, "retentionPolicy": 0},
+    }
+    g = psn_library_item_to_game(game)
+    assert g is not None
+    assert g["title"] == "Lost"

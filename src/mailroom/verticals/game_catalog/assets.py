@@ -467,6 +467,33 @@ def _igdb_platform_matches(igdb_platforms: list[int] | None, owned_platform: str
     return bool(wanted & set(igdb_platforms))
 
 
+_ROMAN_TO_ARABIC = {
+    "iii": "3", "ii": "2", "iv": "4", "vi": "6", "vii": "7",
+    "viii": "8", "ix": "9", "v": "5", "x": "10",
+}
+
+
+def _roman_to_arabic(s: str) -> str:
+    """Convert standalone roman-numeral tokens to digits ('God of War III' ->
+    'god of war 3', 'Ghostrunner II' -> 'ghostrunner 2').
+
+    Longest-first so 'iii' isn't clobbered by 'ii'; single 'i' is deliberately
+    NOT converted ('I Am Setsuna' is not '1 am setsuna').
+    """
+    for rom, arabic in sorted(_ROMAN_TO_ARABIC.items(), key=lambda kv: -len(kv[0])):
+        s = re.sub(rf"\b{rom}\b", arabic, s)
+    return s
+
+
+def _igdb_norm(s: str) -> str:
+    """Normalize a title/name for comparison: strip punctuation/platform
+    words, roman numerals -> digits, collapse whitespace."""
+    s = re.sub(r"[™®©&()]", " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45]|game)\b", " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+", " ", s).strip(" -–—:;").lower()
+    return _roman_to_arabic(s)
+
+
 def _igdb_name_matches(title: str, igdb_name: str | None) -> bool:
     """Exact-name check between our title and an IGDB result name.
 
@@ -476,13 +503,14 @@ def _igdb_name_matches(title: str, igdb_name: str | None) -> bool:
     """
     if not igdb_name:
         return False
+    return _igdb_norm(title) == _igdb_norm(igdb_name)
 
-    def norm(s: str) -> str:
-        s = re.sub(r"[™®©&()]", " ", s, flags=re.IGNORECASE)
-        s = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45]|game)\b", " ", s, flags=re.IGNORECASE)
-        return re.sub(r"\s+", " ", s).strip(" -–—:;").lower()
 
-    return norm(title) == norm(igdb_name)
+def _igdb_search_tokens(term: str) -> set[str]:
+    """Significant tokens of a (normalized) search term — used to gate the
+    no-exact-match fallback so a wrong popular title is not auto-linked."""
+    t = _roman_to_arabic(term.lower())
+    return set(re.findall(r"[a-z0-9]+", t))
 
 
 _EDITION_WORDS = (
@@ -505,10 +533,13 @@ def igdb_search_term(title: str) -> str:
     t = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u2300-\u23FF]", " ", t)  # emoji/dingbats
     t = re.split(r"\s+w/", t)[0]           # drop eBay 'w/ <variant>' suffixes
     t = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45])\b", " ", t, flags=re.IGNORECASE)
-    t = re.sub(r"\b(?:a|an|the|and|for|of|on|with|us|edition)\b", " ", t, flags=re.IGNORECASE)
-    t = re.sub(r"\b(?:sealed|sony|new|brand new)\b", " ", t, flags=re.IGNORECASE)
+    # Edition phrases FIRST (they contain stopwords — 'standard edition' must
+    # go as a phrase, not be reduced to a stray 'standard' by the stopword
+    # pass below, which would pollute the search term and the token gate).
     for w in _EDITION_WORDS:
         t = re.sub(rf"\b{re.escape(w)}\b", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b(?:a|an|the|and|for|of|on|with|us|edition)\b", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b(?:sealed|sony|new|brand new)\b", " ", t, flags=re.IGNORECASE)
     t = re.sub(r"\s+", " ", t).strip(" -–—:;").lower()
     return t[:80] or title[:80].lower()
 
@@ -530,7 +561,37 @@ def igdb_search_terms(title: str) -> list[str]:
     split = re.sub(r"(?<=\d)(?=[a-z])", " ", split)      # 5x -> 5 x
     if split and split not in terms:
         terms.append(split)
+    # Roman -> digits ('god war iii' -> 'god war 3') so IGDB finds the sequel
+    # instead of ranking a hyped newer title first (GODS/GOW III class).
+    roman = _roman_to_arabic(terms[0])
+    if roman and roman not in terms:
+        terms.append(roman)
     return terms
+
+
+def _pick_igdb_result(title: str, results: list[dict], platform: str, term: str | None = None) -> dict | None:
+    """Pick the best IGDB result for a title, or None to leave it unmatched.
+
+    1. EXACT-name results win (platform-preferred among same-name entries).
+    2. Otherwise a result is acceptable only when the search term's significant
+       tokens ALL appear in its normalized name — and only when the term has
+       >= 2 significant tokens. Single-token titles ('Unplugged', 'GODS'-class)
+       are too ambiguous to auto-pick: the wrong-but-popular entry ('Rock Band
+       Unplugged', 'God of War Ragnarök') would win.
+    """
+    exact = [r for r in results if _igdb_name_matches(title, r.get("name"))]
+    if exact:
+        return next((r for r in exact if _igdb_platform_matches(r.get("platforms") or [], platform)), exact[0])
+    tokens = _igdb_search_tokens(term or igdb_search_term(title))
+    if len(tokens) < 2:
+        return None  # ambiguous short title — leave for manual review
+    candidates = [
+        r for r in results
+        if tokens <= _igdb_search_tokens(_igdb_norm(r.get("name") or ""))
+    ]
+    if not candidates:
+        return None
+    return next((r for r in candidates if _igdb_platform_matches(r.get("platforms") or [], platform)), candidates[0])
 
 
 @asset(
@@ -563,25 +624,39 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     matched = unmatched = 0
     for row in rows:
         gid, matched_title, method = None, None, None
-        results = []
+        # Search EVERY candidate term (not just the first non-empty): a raw or
+        # roman-digit term can surface the exact entry the stripped term missed
+        # ('GODS Remastered' -> stripped 'gods' ranks Ragnarök first; raw
+        # 'gods remastered' returns the exact 'Gods Remastered').
+        first_results, first_term = None, None
+        results_by_term: dict[str, list] = {}
         for term in igdb_search_terms(row["title"]):
             results = igdb.search_game(term)
             if results:
-                break
-        if results:
-            # Prefer the EXACT-name result over results[0]: IGDB search ranks
-            # hyped/newer titles first, so 'Elden Ring' can resolve to
-            # 'Elden Ring Nightreign' (325591) instead of Elden Ring (119133).
-            # Among multiple same-name entries (Resident Evil 4 2005/2011/2023),
-            # prefer the one on our owned platform (PS5 -> the 2023 remake).
-            exact = [r for r in results if _igdb_name_matches(row["title"], r.get("name"))]
-            if exact:
-                pick = next((r for r in exact if _igdb_platform_matches(r.get("platforms") or [], row["platform"])), exact[0])
-            else:
-                pick = results[0]
-            gid = pick["id"]
-            matched_title = pick.get("name")
-            method = "search"
+                if first_results is None:
+                    first_results, first_term = results, term
+                results_by_term[term] = results
+        if first_results:
+            # 1) EXACT-name preference: IGDB ranks hyped/newer titles first
+            # ('Elden Ring' -> 'Elden Ring Nightreign'), so the exact-name
+            # result wins; among same-name entries (Resident Evil 4
+            # 2005/2011/2023) prefer our owned platform (PS5 -> the 2023 remake).
+            pick = None
+            for term, res in results_by_term.items():
+                exact = [r for r in res if _igdb_name_matches(row["title"], r.get("name"))]
+                if exact:
+                    pick = next((r for r in exact if _igdb_platform_matches(r.get("platforms") or [], row["platform"])), exact[0])
+                    break
+            # 2) No exact name: gate the fallback instead of blindly taking
+            # results[0] — a wrong-but-popular entry must not be auto-linked
+            # ('Unplugged' -> Rock Band Unplugged; GODS -> Ragnarök; Dreams OST
+            # -> High School Musical). Ambiguous picks stay unmatched (review).
+            if pick is None:
+                pick = _pick_igdb_result(row["title"], first_results, row["platform"], term=first_term)
+            if pick is not None:
+                gid = pick["id"]
+                matched_title = pick.get("name")
+                method = "search"
         if not gid and row["psn_content_id"]:
             gid = igdb.game_by_external_psn_uid(row["psn_content_id"])
             method = "external_games"
@@ -637,7 +712,32 @@ def dedupe_owned_games(context: AssetExecutionContext) -> None:
     )
 
 
-@asset(deps=[dedupe_owned_games], required_resource_keys={"db_url", "igdb"})
+@asset(deps=[dedupe_owned_games], required_resource_keys={"db_url"})
+def catalog_quality_repairs(context: AssetExecutionContext) -> None:
+    """Idempotent data-quality repairs the matcher can't do itself.
+
+    Retires cancelled-order junk + non-game add-ons, splits rows whose
+    psn_content_id jammed two games together (wrong IGDB match -> dedup
+    merge), and pins ambiguous short titles by content id. Every action is
+    audited to review_queue; safe to re-run (keyed on stable facts).
+    """
+    from mailroom.verticals.game_catalog.repairs import apply_catalog_repairs
+
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    report = apply_catalog_repairs(conn)
+    conn.close()
+    context.log.info(
+        f"catalog_quality_repairs: retired {len(report.retired)}, split {len(report.split)}, "
+        f"rematched {len(report.rematched)}, skipped {len(report.skipped)}"
+    )
+    for r in report.retired + report.split + report.rematched:
+        context.log.info(f"  repair: {r}")
+    for r in report.skipped:
+        context.log.warning(f"  repair skipped (needs review): {r}")
+
+
+@asset(deps=[dedupe_owned_games, catalog_quality_repairs], required_resource_keys={"db_url", "igdb"})
 def game_metadata(context: AssetExecutionContext) -> None:
     """IGDB details per matched game (covers/genres/rating/release). Paced,
     resumable (skips ids already fetched); on-demand only, not scheduled."""

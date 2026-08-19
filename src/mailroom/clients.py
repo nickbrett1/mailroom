@@ -367,7 +367,16 @@ _APP_MARKERS = (
 )
 # Content entitlements that are NOT games (word-bounded so 'demo' doesn't hit
 # Demon's Souls, 'ost' doesn't hit Lost, and Theme Hospital stays a game).
-_CONTENT_RE = re.compile(r"\b(?:demo|ost)\b|soundtrack|artbook|art book", re.IGNORECASE)
+# 'the music of' is the Dreams OST add-on title ('The Music of Dreams') — the
+# name check alone can't see DREAMSOST in the content id, so _CONTENT_ID_RE
+# below catches the add-on ids directly.
+_CONTENT_RE = re.compile(r"\b(?:demo|ost)\b|soundtrack|artbook|art book|the music of", re.IGNORECASE)
+# Add-on content ids that are not games: Dreams OST (DREAMSOST0000001…) and
+# Dreams Art Book (DREAMSARTBOOK001…) end up in the PSN title library under
+# names like 'The Music of Dreams' / 'The Art of Dreams' — no IGDB game exists
+# for them. The trailing digits are required so 'LOSTGAME…' / 'GHOST…' /
+# 'COSTUME…' (letters after OST) never match.
+_CONTENT_ID_RE = re.compile(r"(?:OST|ARTBOOK)\d{2,}", re.IGNORECASE)
 
 
 def _item_is_psplus(item: dict[str, Any]) -> tuple[bool, str | None]:
@@ -400,7 +409,7 @@ def psn_library_item_to_game(item: dict[str, Any]) -> dict[str, Any] | None:
     for marker in _APP_MARKERS:
         if marker in low:
             return None  # apps / subscriptions — keep the catalog to games
-    if _CONTENT_RE.search(name):
+    if _CONTENT_RE.search(name) or _CONTENT_ID_RE.search(content_id):
         return None  # demos / OSTs / artbooks — not games
     pkg = str(meta.get("type") or meta.get("packageType") or "")
     # Verified live 2026-08-17: PS4GD = PS4 digital; PSGD = PS5 digital

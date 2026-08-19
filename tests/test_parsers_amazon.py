@@ -208,3 +208,59 @@ def test_multi_order_email_returns_one_purchase_per_order():
 
 def test_unrelated_body_returns_empty_list():
     assert parse_amazon_receipt("some random email") == []
+
+
+def test_subject_fallback_extracts_confirmation_item():
+    """Newer Amazon template: the body has the order # but no item lines —
+    the item fact lives in the subject ('Your Amazon.com order of "X".')."""
+    body = """
+Thanks for your order, Nick!
+
+Order #
+114-1970161-5765038
+
+View or edit order
+https://www.amazon.com/your-orders/order-details?orderID=114-1970161-5765038
+
+Total
+16.94 USD
+"""
+    ps = parse_amazon_receipt(body, message_id="32705", subject='Your Amazon.com order of "Resident Evil 4 - PS5".')
+    assert len(ps) == 1
+    assert ps[0].items[0].title == "Resident Evil 4 - PS5"
+
+
+def test_cancelled_order_never_becomes_a_purchase():
+    """A cancellation email must not produce a catalog fact — the subject
+    fallback used to swallow the whole tail ('...has been canceled') and the
+    'MPS4' substring classified a plunger as a PlayStation game."""
+    body = """
+Order #
+111-8374686-1690617
+
+View or edit order
+https://www.amazon.com/your-orders/order-details?orderID=111-8374686-1690617
+"""
+    ps = parse_amazon_receipt(
+        body,
+        message_id="9988",
+        subject='Your Amazon.com order of "Master Plunger MPS4 Sink ..." has been canceled',
+    )
+    assert ps == []
+
+
+def test_cancellation_subject_with_item_lines_also_skipped():
+    """Even when the body carries order/item lines, a cancel subject wins."""
+    body = """
+Order #
+111-1234567-7654321
+
+* Master Plunger MPS4 Sink
+  Quantity: 1
+  12.34 USD
+
+Total
+12.34 USD
+"""
+    ps = parse_amazon_receipt(body, message_id="9989", subject="Order canceled")
+    assert ps == []
