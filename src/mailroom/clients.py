@@ -213,14 +213,52 @@ class IgdbClient:
     PS_PLATFORM_IDS = (7, 8, 9, 38, 46, 48, 167)
 
     def search_game(self, name: str) -> list[dict[str, Any]]:
-        """Search IGDB games by name, preferring PlayStation platforms."""
+        """Search IGDB games by name, preferring PlayStation platforms.
+
+        IGDB's `search` clause is unreliable for short/common words ('below',
+        'islanders', 'invisible' -> 0 results), so when it comes back empty we
+        fall back to a case-insensitive name-substring match
+        (`where name ~ *"term"*`). The exact-name/gate picker in igdb_matches
+        then chooses the right entry (a `& category = 0` filter breaks the
+        regex query — returns 0 rows — so DLC shadowing is handled by the
+        picker's exact-name preference, not here).
+        """
         safe = re.sub(r'["\\\n\r\t]', "", name or "")
+
+        def _ps_first(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            ps = [r for r in rows if any(p in (r.get("platforms") or []) for p in self.PS_PLATFORM_IDS)]
+            return ps or rows
+
         rows = self._apicalypse(
             "games",
             f'fields id,name,platforms,first_release_date; search "{safe}"; limit 10;',
         )
-        ps = [r for r in rows if any(p in (r.get("platforms") or []) for p in self.PS_PLATFORM_IDS)]
-        return ps or rows
+        # 'search' can return a single fuzzy hit with no name overlap
+        # ('islanders' -> 'Escape from Monkey Island') — only accept it when a
+        # result contains the term as a whole WORD, otherwise fall through to
+        # the reliable queries below ('dreams' -> 'The House in Fata Morgana:
+        # ... of Dreams' has 'dreams' only inside a longer word/phrase, so the
+        # exact-name query gets a chance to surface the actual 'Dreams').
+        if rows and any(safe in re.split(r"\W+", (r.get("name") or "").lower()) for r in rows):
+            return _ps_first(rows)
+        # 1) Exact-name: `name ~ "term"` (case-insensitive equality, no stars)
+        #    — the reliable path for common words ('Below', 'Dreams',
+        #    'Control'). All exact-name entries returned as-is (no PS-first —
+        #    any of them IS the game; the matcher platform-prefers among them).
+        rows_eq = self._apicalypse(
+            "games",
+            f'fields id,name,platforms,first_release_date; where name ~ "{safe}"; limit 10;',
+        )
+        if rows_eq:
+            return rows_eq
+        # 2) Substring as a last resort ('The Gardens Between' for the term
+        #    'gardens between'); return ALL rows so the exact-name check in the
+        #    matcher is never starved.
+        rows_sub = self._apicalypse(
+            "games",
+            f'fields id,name,platforms,first_release_date; where name ~ *"{safe}"*; sort name asc; limit 10;',
+        )
+        return rows_sub or _ps_first(rows)
 
     def game_details(self, game_id: int) -> dict[str, Any]:
         """Fetch metadata for one game (covers, genres, themes, rating, release)."""

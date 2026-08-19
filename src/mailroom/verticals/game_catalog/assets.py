@@ -475,13 +475,16 @@ _ROMAN_TO_ARABIC = {
 
 def _roman_to_arabic(s: str) -> str:
     """Convert standalone roman-numeral tokens to digits ('God of War III' ->
-    'god of war 3', 'Ghostrunner II' -> 'ghostrunner 2').
+    'god of war 3', 'Ghostrunner II' -> 'ghostrunner 2', 'The Last of Us
+    Part I' -> 'part 1').
 
-    Longest-first so 'iii' isn't clobbered by 'ii'; single 'i' is deliberately
-    NOT converted ('I Am Setsuna' is not '1 am setsuna').
+    Longest-first so 'iii' isn't clobbered by 'ii'. Single 'i' is converted
+    ONLY when it is the final token — 'The Last of Us Part I' is 'part 1',
+    but 'I Am Setsuna' stays 'i am setsuna'.
     """
     for rom, arabic in sorted(_ROMAN_TO_ARABIC.items(), key=lambda kv: -len(kv[0])):
         s = re.sub(rf"\b{rom}\b", arabic, s)
+    s = re.sub(r"\bi\b(?=\s*$)", "1", s)
     return s
 
 
@@ -524,7 +527,7 @@ _EDITION_WORDS = (
     "collector's edition", "collectors edition", "game of the year edition",
     "special edition", "complete edition", "definitive edition", "day 1 edition",
     "cross-gen", "digital edition", "premium edition", "anniversary edition",
-    "monarch edition", "exclusive", "goty", "remastered", "remake",
+    "monarch edition", "exclusive", "goty", "remastered", "remake", "version",
 )
 
 
@@ -609,8 +612,15 @@ def _pick_igdb_result(title: str, results: list[dict], platform: str, term: str 
         name_tokens = _igdb_search_tokens(_igdb_norm(name))
         if not name_tokens:
             continue
-        if tokens <= name_tokens or (single and _igdb_name_compact(name) == term):
-            candidates.append(r)  # forward: term appears in the name
+        compact_ok = single and _igdb_name_compact(name) == term  # 'CoffeeTalk' ~ 'Coffee Talk'
+        if tokens <= name_tokens or compact_ok:  # forward: term appears in the name
+            if single and name_tokens != tokens and not compact_ok:
+                # single-token guard: 'Dreams' must not auto-link to
+                # 'The House in Fata Morgana: ... of Dreams' — the name must BE
+                # the term (or its space-less form). Ambiguous common-word
+                # titles stay unmatched (review).
+                continue
+            candidates.append(r)
         elif not single and name_tokens <= tokens:  # reverse: name is a subset of the title's words
             candidates.append(r)
     if not candidates:
