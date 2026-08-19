@@ -32,7 +32,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mailroom.db import provenance_parts
+from mailroom.db import merge_provenance, provenance_parts
 from mailroom.verticals.game_catalog.parsers.psn import normalize_title
 
 # --- non-game add-ons: (content-id marker, retire reason) -------------------
@@ -124,6 +124,7 @@ class RepairReport:
     retired: list[dict] = field(default_factory=list)
     split: list[dict] = field(default_factory=list)
     rematched: list[dict] = field(default_factory=list)
+    merged: list[dict] = field(default_factory=list)
     skipped: list[dict] = field(default_factory=list)
 
 
@@ -314,6 +315,155 @@ def _split_jammed_row(conn, row, report: RepairReport) -> None:
         report.split.append({"id": new_id, "title": ov["title"], "kept_cid": cid, "split_cids": []})
 
 
+# --- wrong-IGDB-match jam: Valkyria Chronicles 4 + Remastered ---------------
+# PSN receipts 411948960000 (Valkyria Chronicles 4, $5.99, 2023-05-24) and
+# 507107929603 (Valkyria Chronicles Remastered, $4.99, 2024-03-06) were
+# dedup-merged into ONE row because the VC4 receipt was wrongly matched to
+# igdb 75848 (the Remastered entry). The row kept the VC4 API content id
+# (UP0177-CUSA10633) but carries BOTH receipts. Split back into two rows;
+# igdb is left NULL so the next igdb_matches pass matches each by title.
+VALKYRIA_VC4_CID = "UP0177-CUSA10633_00-BFVALKYRIE000100"
+VALKYRIA_RECEIPTS = {
+    "411948960000": {"title": "Valkyria Chronicles 4", "platform": "playstation 4",
+                     "acquisition_date": "05/24/2023", "price": "$5.99"},
+    "507107929603": {"title": "Valkyria Chronicles Remastered", "platform": "playstation 4",
+                     "acquisition_date": "03/06/2024", "price": "$4.99"},
+}
+
+
+def _split_valkyria_jam(conn, report: RepairReport) -> None:
+    """Split the VC4 + VC Remastered row jammed by a wrong IGDB match."""
+    row = conn.execute(
+        "SELECT * FROM owned_games WHERE psn_content_id = ? AND is_owned = 1",
+        (VALKYRIA_VC4_CID,),
+    ).fetchone()
+    if not row:
+        return
+    parts = provenance_parts(row["provenance"])
+    if not (any("507107929603" in p for p in parts) and any("411948960000" in p for p in parts)):
+        return  # already split (idempotent)
+    vc4 = VALKYRIA_RECEIPTS["411948960000"]
+    rem = VALKYRIA_RECEIPTS["507107929603"]
+    keep = [p for p in parts if "507107929603" not in p]
+    conn.execute(
+        """UPDATE owned_games SET title = ?, normalized_title = ?, platform = ?,
+           igdb_id = NULL, acquisition_date = ?, price = ?, provenance = ?,
+           updated_at = datetime('now') WHERE id = ?""",
+        (vc4["title"], normalize_title(vc4["title"]), vc4["platform"],
+         vc4["acquisition_date"], vc4["price"], _prov_json(keep), row["id"]),
+    )
+    conn.execute("DELETE FROM igdb_matches WHERE owned_game_id = ?", (row["id"],))
+    _audit(
+        conn, row["id"], vc4["title"], "split_wrong_igdb_jam",
+        "kept Valkyria Chronicles 4 (receipt 411948960000); split out Valkyria Chronicles Remastered "
+        "(receipt 507107929603) — wrong IGDB match (75848) merged two games; igdb left for re-match",
+    )
+    report.split.append({"id": row["id"], "title": vc4["title"], "kept_cid": VALKYRIA_VC4_CID,
+                         "split_cids": ["psn_receipt:507107929603"]})
+    cur = conn.execute(
+        """INSERT INTO owned_games
+           (title, normalized_title, platform, format, ownership_class, retailer,
+            order_number, item_id, condition, psn_content_id, igdb_id,
+            acquisition_date, price, source, source_ref, status, is_owned, provenance)
+           VALUES (?, ?, ?, 'digital', 'purchased', NULL, ?, NULL, NULL, NULL, NULL, ?, ?, 'psn_receipt', ?, 'owned', 1, ?)""",
+        (rem["title"], normalize_title(rem["title"]), rem["platform"], "507107929603",
+         rem["acquisition_date"], rem["price"], "507107929603:0",
+         _prov_json(["psn_receipt:507107929603:0"])),
+    )
+    new_id = cur.lastrowid
+    _audit(
+        conn, new_id, rem["title"], "split_wrong_igdb_jam",
+        f"split out of owned game {row['id']} (was merged under {row['psn_content_id']}); igdb left for re-match",
+    )
+    report.split.append({"id": new_id, "title": rem["title"], "kept_cid": "507107929603", "split_cids": []})
+
+
+# --- game-key marketplace purchases merged as provenance --------------------
+# gameflip/woot/shopify seller titles often lack a platform token, so the
+# classifier buckets them 'platform ambiguous' and they never reach
+# owned_games — but the games ARE owned (redeemed on PSN, visible in the
+# library/API). Merge the key purchase into the matching owned row as
+# provenance instead of dropping it. Skipped: add-on/DLC purchases and
+# non-PlayStation hardware (Evercade carts). Idempotent per flag.
+GAME_KEY_SOURCES = {"gameflip", "woot", "shopify"}
+_REVIEW_SKIP_RE = (
+    re.compile(r"special outfit|add-?on|evercade", re.IGNORECASE),
+)
+# Normalized-title overrides: seller title -> owned normalized_title.
+REVIEW_TITLE_OVERRIDES = {
+    "republique remastered": "republique",
+    "plumbers don't wear ties": "plumbers don't wear ties: definitive edition",
+    "ɪɴ𝐬ᴛᴀɴᴛ lara croft go": "lara croft go",  # seller '⭐INSTANT⭐' decoration (unicode small caps)
+    "baby shark sing & swim party": "baby shark: sing & swim party",
+}
+
+
+def _clean_review_title(title: str) -> str:
+    """Strip seller decoration (emoji/unicode) from a marketplace title."""
+    cleaned = re.sub(r"[^\w\s'\-:&]", " ", title, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _flag_payload(raw: str | None) -> dict:
+    """Parse a review_queue payload — JSON or the Python-dict-string form the
+    classify asset writes (str(dict(row)))."""
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        pass
+    try:
+        import ast
+
+        value = ast.literal_eval(raw)
+        return value if isinstance(value, dict) else {}
+    except (ValueError, SyntaxError):
+        return {}
+
+
+def apply_review_merges(conn, report: RepairReport) -> None:
+    """Merge open game-key purchase flags into the already-owned game."""
+    for fl in conn.execute(
+        "SELECT * FROM review_queue WHERE status = 'open' AND reason = 'platform ambiguous'"
+    ).fetchall():
+        if fl["source"] not in GAME_KEY_SOURCES:
+            continue
+        if any(p.search(fl["title"] or "") for p in _REVIEW_SKIP_RE):
+            continue
+        payload = _flag_payload(fl["payload"])
+        item_key = payload.get("item_key") or fl["order_number"]
+        if not item_key:
+            continue
+        norm = normalize_title(_clean_review_title(fl["title"] or ""))
+        norm = REVIEW_TITLE_OVERRIDES.get(norm, norm)
+        target = conn.execute(
+            "SELECT * FROM owned_games WHERE is_owned = 1 AND normalized_title = ? LIMIT 1",
+            (norm,),
+        ).fetchone()
+        if not target:
+            continue
+        prov_ref = f"{fl['source']}:{item_key}"
+        if any(prov_ref == p for p in provenance_parts(target["provenance"])):
+            conn.execute("UPDATE review_queue SET status = 'resolved' WHERE id = ?", (fl["id"],))
+            continue
+        conn.execute(
+            """UPDATE owned_games SET provenance = ?, price = COALESCE(?, price),
+               updated_at = datetime('now') WHERE id = ?""",
+            (merge_provenance(target["provenance"], prov_ref), payload.get("price"), target["id"]),
+        )
+        payload["decision"] = "merged_as_provenance"
+        conn.execute(
+            "UPDATE review_queue SET status = 'resolved', payload = ? WHERE id = ?",
+            (json.dumps(payload), fl["id"]),
+        )
+        _audit(
+            conn, target["id"], target["title"], "merge_key_purchase_provenance",
+            f"merged {fl['source']} purchase '{fl['title']}' ({item_key}) as provenance",
+        )
+        report.merged.append({"id": target["id"], "title": target["title"], "source": fl["source"]})
+
+
 def apply_catalog_repairs(conn) -> RepairReport:
     """Idempotent repair pass over owned_games. Safe to re-run."""
     report = RepairReport()
@@ -378,6 +528,13 @@ def apply_catalog_repairs(conn) -> RepairReport:
                 f"pinned IGDB {gid} (was {r['igdb_id']}) — ambiguous short title",
             )
             report.rematched.append({"id": r["id"], "title": r["title"], "igdb_id": gid})
+
+    # 5) wrong-IGDB-match jam (Valkyria Chronicles 4 + Remastered in one row).
+    _split_valkyria_jam(conn, report)
+
+    # 6) game-key marketplace purchases (gameflip/woot/shopify) merged into
+    # the already-owned game as provenance.
+    apply_review_merges(conn, report)
 
     conn.commit()
     # Collapse duplicates created by the rematch (e.g. the pinned 'Unplugged'
