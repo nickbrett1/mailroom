@@ -29,6 +29,7 @@ def db_url_resource(context) -> str:  # type: ignore[no-untyped-def]
 from mailroom.verticals.game_catalog.assets import (
     catalog_views,
     classified_game_items,
+    dedupe_owned_games,
     game_metadata,
     igdb_matches,
     owned_games,
@@ -56,7 +57,7 @@ psn_sync_schedule = ScheduleDefinition(
 # igdb_matches asset's config (Materialize with config {"recheck": true}).
 catalog_recheck_job = define_asset_job(
     "catalog_recheck",
-    selection=AssetSelection.keys("igdb_matches", "game_metadata", "catalog_views"),
+    selection=AssetSelection.keys("igdb_matches", "dedupe_owned_games", "game_metadata", "catalog_views"),
     config={"ops": {"igdb_matches": {"config": {"recheck": True}}}},
 )
 
@@ -70,6 +71,7 @@ definitions = Definitions(
         owned_games,
         psn_api_owned,
         igdb_matches,
+        dedupe_owned_games,
         game_metadata,
         catalog_views,
     ],

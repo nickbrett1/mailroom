@@ -10,6 +10,7 @@ Design decisions (from the mailroom memo):
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from typing import Any
@@ -106,12 +107,20 @@ CREATE TABLE IF NOT EXISTS owned_games (
     status TEXT DEFAULT 'owned',
     is_owned INTEGER DEFAULT 1,
     provenance TEXT,
+    retire_reason TEXT,          -- set when a dup-merge retires a row (never delete)
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_owned_games_norm ON owned_games(normalized_title);
 CREATE INDEX IF NOT EXISTS idx_owned_games_platform ON owned_games(platform);
+-- Dedup guard (memos/catalog-dedup-fix): at most one OWNED row per enriched
+-- (igdb_id, platform, format). format is part of the key because a digital +
+-- physical copy of the same game legitimately coexist (the memo's open
+-- question — resolved: keep both when format differs). Created after a dedup
+-- pass in init_db (_ensure_dedup_index) so existing dirty stores migrate.
+-- (The DDL lives in _ensure_dedup_index, not here, so a fresh CREATE UNIQUE
+-- INDEX on an already-dirty table doesn't fail init_db.)
 
 -- IGDB match results with confidence.
 CREATE TABLE IF NOT EXISTS igdb_matches (
@@ -214,9 +223,11 @@ def connect(database_url: str | None = None) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create schema if not present, plus lightweight column migrations."""
+    """Create schema if not present, plus lightweight column migrations and the
+    dedup guard index (dedupes existing duplicates first — catalog-dedup-fix)."""
     conn.executescript(SCHEMA)
     _migrate(conn)
+    _ensure_dedup_index(conn)
     conn.commit()
 
 
@@ -225,6 +236,71 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(owned_games)").fetchall()}
     if "ownership_class" not in cols:
         conn.execute("ALTER TABLE owned_games ADD COLUMN ownership_class TEXT DEFAULT 'purchased'")
+    if "retire_reason" not in cols:
+        conn.execute("ALTER TABLE owned_games ADD COLUMN retire_reason TEXT")
+
+
+def _ensure_dedup_index(conn: sqlite3.Connection) -> None:
+    """Create the partial unique dedup index, deduping first if needed.
+
+    A plain CREATE UNIQUE INDEX would fail on a store that already has
+    duplicates (the exact bug this fixes), so existing duplicates are merged
+    (is_owned=0 retire, never delete) before the index is created. Once the
+    index exists, any INSERT/UPDATE that would recreate a duplicate owned
+    (igdb_id, platform, format) row fails loudly — the ingest paths catch that
+    and collapse instead (memos/catalog-dedup-fix).
+    """
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_owned_games_dedup'"
+    ).fetchone():
+        return
+    from mailroom.verticals.game_catalog import (
+        dedup as _dedup,  # lazy: dedup imports db
+    )
+
+    _dedup.dedupe_owned_games(conn)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_games_dedup "
+        "ON owned_games(igdb_id, platform, format) "
+        "WHERE igdb_id IS NOT NULL AND is_owned = 1"
+    )
+
+
+# --- provenance helpers (dedup / merge support) ---
+
+
+def provenance_parts(provenance: str | None) -> list[str]:
+    """Split a provenance value into its ordered source:ref parts.
+
+    Accepts the scalar form ('psn_api:UP9000-…') used before the dedup fix and
+    the merged JSON-array form ('["psn_api:…", "psn_receipt:…"]') the merge
+    rules write (memos/catalog-dedup-fix: provenance becomes a list). None /
+    empty -> [].
+    """
+    if not provenance:
+        return []
+    s = provenance.strip()
+    if s.startswith("["):
+        try:
+            parts = json.loads(s)
+        except (ValueError, TypeError):
+            return [s]
+        return [p for p in parts if isinstance(p, str) and p]
+    return [s]
+
+
+def merge_provenance(*values: str | None) -> str | None:
+    """Union of provenance values as a JSON array string (order preserved).
+
+    'psn_api:UP9000-…' + 'psn_receipt:o1' -> '["psn_api:UP9000-…", "psn_receipt:o1"]'.
+    Duplicates collapse; no parts -> None (matches NULL provenance rows).
+    """
+    parts: list[str] = []
+    for v in values:
+        for p in provenance_parts(v):
+            if p not in parts:
+                parts.append(p)
+    return json.dumps(parts) if parts else None
 
 
 # --- thin repository helpers (the only place SQL lives) ---
@@ -265,28 +341,47 @@ def upsert_raw_receipt(conn: sqlite3.Connection, receipt: dict[str, Any]) -> Non
 def upsert_owned_game(conn: sqlite3.Connection, game: dict[str, Any]) -> int:
     """Upsert an owned game. Merge policy: receipts add, psn-api confirms /
     adds claims, manual overrides win, never silently delete (retire via
-    is_owned=0 + reason in provenance)."""
+    is_owned=0 + reason in provenance).
+
+    Enriched games (game['igdb_id'] set) merge on (igdb_id, platform, format)
+    FIRST so a re-ingested matched game collapses into its existing row
+    instead of inserting a duplicate. Un-enriched games keep the old keys:
+    psn_content_id, then (normalized_title, platform) — with generic
+    'playstation' receipt rows matching a concrete API row so an API sync
+    merges into the receipt row even before the platform backfill happens
+    (memos/catalog-dedup-fix).
+    """
+    if game.get("igdb_id"):
+        # Match on the enriched canonical key, tolerant of generic platforms on
+        # EITHER side: 'playstation' (receipt rows carry no platform signal)
+        # merges into the concrete psn_api row, and vice versa.
+        row = conn.execute(
+            """SELECT id, provenance FROM owned_games
+               WHERE is_owned = 1 AND igdb_id = :igdb_id AND format = :format
+                 AND (platform = :platform
+                      OR platform IN ('playstation', 'ps')
+                      OR :platform IN ('playstation', 'ps'))
+               ORDER BY (platform = :platform) DESC, id LIMIT 1""",
+            game,
+        ).fetchone()
+        if row:
+            return _update_owned_game(conn, row, game)
     key = (game.get("psn_content_id") or "", game.get("normalized_title") or "", game.get("platform") or "")
+    # Same title/format on a generic platform is the same game — a receipt row
+    # ('playstation' — the parser emits no platform hint) merges into the
+    # concrete psn_api row and vice versa. Prefer the concrete row (has the
+    # content id) when both exist.
     row = conn.execute(
-        """SELECT id FROM owned_games
-           WHERE (psn_content_id = ? OR (normalized_title = ? AND platform = ?))""",
-        key,
+        """SELECT id, provenance FROM owned_games
+           WHERE (psn_content_id = ?
+                  OR (normalized_title = ? AND platform = ?)
+                  OR (format = 'digital' AND normalized_title = ?
+                      AND (platform IN ('playstation', 'ps') OR ? IN ('playstation', 'ps'))))
+           ORDER BY (platform = ?) DESC, (platform IN ('playstation', 'ps')) ASC, id LIMIT 1""",
+        (*key, game.get("normalized_title") or "", game.get("platform") or "", game.get("platform") or ""),
     ).fetchone()
     if row:
-        conn.execute(
-            """UPDATE owned_games SET
-                 title = :title, igdb_id = COALESCE(:igdb_id, igdb_id),
-                 acquisition_date = COALESCE(:acquisition_date, acquisition_date),
-                 price = COALESCE(:price, price),
-                 ownership_class = COALESCE(:ownership_class, ownership_class),
-                 psn_content_id = COALESCE(:psn_content_id, psn_content_id),
-                 provenance = :provenance,
-                 updated_at = datetime('now')
-               WHERE id = :id""",
-            {**game, "id": row["id"]},
-        )
-        conn.commit()
-        return row["id"]
+        return _update_owned_game(conn, row, game)
     cur = conn.execute(
         """INSERT INTO owned_games
            (title, normalized_title, platform, format, ownership_class, retailer,
@@ -300,6 +395,26 @@ def upsert_owned_game(conn: sqlite3.Connection, game: dict[str, Any]) -> int:
     )
     conn.commit()
     return cur.lastrowid
+
+
+def _update_owned_game(conn: sqlite3.Connection, row: sqlite3.Row, game: dict[str, Any]) -> int:
+    """Merge `game` into the existing row: union provenance (never replace —
+    provenance is a list, memos/catalog-dedup-fix), COALESCE the rest."""
+    merged_prov = merge_provenance(row["provenance"], game.get("provenance"))
+    conn.execute(
+        """UPDATE owned_games SET
+             title = :title, igdb_id = COALESCE(:igdb_id, igdb_id),
+             acquisition_date = COALESCE(:acquisition_date, acquisition_date),
+             price = COALESCE(:price, price),
+             ownership_class = COALESCE(:ownership_class, ownership_class),
+             psn_content_id = COALESCE(:psn_content_id, psn_content_id),
+             provenance = :provenance,
+             updated_at = datetime('now')
+           WHERE id = :id""",
+        {**game, "id": row["id"], "provenance": merged_prov},
+    )
+    conn.commit()
+    return row["id"]
 
 
 # --- credential lifecycle (PSN PS-App OAuth + future API sources) ---

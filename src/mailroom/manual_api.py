@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from mailroom.db import connect, get_credential, init_db, set_credential
+from mailroom.verticals.game_catalog import dedup
 
 app = FastAPI(title="mailroom manual-edit API")
 
@@ -77,6 +78,38 @@ def igdb_match(req: MatchRequest) -> dict:
         row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (req.owned_game_id,)).fetchone()
         if not row:
             raise HTTPException(404, f"no owned game with id {req.owned_game_id}")
+        # Dedup guard (catalog-dedup-fix): another OWNED row already claims this
+        # (igdb_id, platform, format) — merge instead of leaving a duplicate.
+        other = conn.execute(
+            """SELECT * FROM owned_games
+               WHERE is_owned = 1 AND igdb_id = ? AND platform = ? AND format = ? AND id != ?""",
+            (req.igdb_id, row["platform"], row["format"], req.owned_game_id),
+        ).fetchone()
+        if other:
+            winner_id = dedup.merge_group(conn, [row, other])
+            conn.execute(
+                """INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title)
+                   VALUES (?, ?, 'manual', ?)""",
+                (req.owned_game_id, req.igdb_id, row["title"]),
+            )
+            conn.execute(
+                """INSERT INTO review_queue(source, order_number, title, reason, payload, status)
+                   VALUES ('manual_igdb_match', ?, ?, ?, ?, 'resolved')""",
+                (
+                    str(row["order_number"] or ""),
+                    row["title"],
+                    f"manual IGDB match applied (igdb {req.igdb_id}); merged into owned game {winner_id}",
+                    req.note or "",
+                ),
+            )
+            conn.commit()
+            return {
+                "owned_game_id": winner_id,
+                "igdb_id": req.igdb_id,
+                "applied": True,
+                "merged": True,
+                "retired_owned_game_id": req.owned_game_id,
+            }
         conn.execute(
             """INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title)
                VALUES (?, ?, 'manual', ?)""",

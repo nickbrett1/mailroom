@@ -35,6 +35,7 @@ def main() -> int:
     # Dagster UI (catalog_recheck job / Materialize with config).
     ctx = build_op_context(resources={"db_url": args.db, "igdb": igdb}, config={"recheck": bool(args.recheck)})
     assets.igdb_matches(ctx)
+    assets.dedupe_owned_games(ctx)  # collapse duplicates by IGDB match (catalog-dedup-fix)
     assets.game_metadata(ctx)
     assets.catalog_views(ctx)
 
@@ -49,7 +50,14 @@ def main() -> int:
     total = conn.execute("SELECT COUNT(*) n FROM owned_games WHERE is_owned=1").fetchone()["n"]
     matched_total = conn.execute("SELECT COUNT(*) n FROM owned_games WHERE is_owned=1 AND igdb_id IS NOT NULL").fetchone()["n"]
     print(f"{'TOTAL':10s} {total:6d} {matched_total:8d} {total - matched_total:10d}  ({100 * matched_total / max(total, 1):.1f}% matched)")
-    print(f"\nmetadata fetched: {conn.execute('SELECT COUNT(*) n FROM game_metadata').fetchone()['n']}")
+    dupes = conn.execute(
+        """SELECT COUNT(*) n FROM (
+             SELECT igdb_id, platform, format FROM owned_games
+             WHERE is_owned = 1 AND igdb_id IS NOT NULL
+             GROUP BY igdb_id, platform, format HAVING COUNT(*) > 1)"""
+    ).fetchone()["n"]
+    print(f"\nduplicate (igdb_id, platform, format) owned groups remaining: {dupes}")
+    print(f"metadata fetched: {conn.execute('SELECT COUNT(*) n FROM game_metadata').fetchone()['n']}")
     print("\n-- unmatched (first 25) --")
     for r in conn.execute(
         "SELECT title, platform, format, psn_content_id FROM owned_games WHERE is_owned=1 AND igdb_id IS NULL ORDER BY title LIMIT 25"
