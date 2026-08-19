@@ -490,10 +490,34 @@ def test_igdb_matches_receipt_title_with_extra_words():
     conn.close()
 
 
-def test_igdb_matches_single_token_matches_longer_name():
-    """'Skyrim' must match 'The Elder Scrolls V: Skyrim' — a single-token term
-    that is a token of a longer canonical name is a valid match (the psn_api
-    short title)."""
+def test_igdb_matches_single_token_common_word_stays_unmatched():
+    """'Skyrim' / 'Dreams' are single common-word tokens: a longer name that
+    merely CONTAINS the token ('The Elder Scrolls V: Skyrim', '...of Dreams')
+    must not auto-link — ambiguous titles stay unmatched for review."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Dreams™", platform="playstation 4", source="psn_api")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "dreams": [
+                {"id": 330338, "name": "The House in Fata Morgana: Remake of Dreams", "platforms": [48, 167]},
+                {"id": 11155, "name": "Dreams", "platforms": [48]},
+            ]
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 11155, "the exact-name 'Dreams' entry wins when present"
+    conn.close()
+
+
+def test_igdb_matches_single_token_ambiguous_no_exact_stays_unmatched():
+    """No exact-name entry in the results -> single-token title stays
+    unmatched instead of linking a game that merely contains the word."""
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")
     init_db(conn)
@@ -508,5 +532,32 @@ def test_igdb_matches_single_token_matches_longer_name():
     assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
     conn = connect(f"sqlite:///{db}")
     row = conn.execute("SELECT * FROM owned_games").fetchone()
-    assert row["igdb_id"] == 13934
+    assert row["igdb_id"] is None, "ambiguous single-token title must stay unmatched (review)"
     conn.close()
+
+
+def test_igdb_matches_roman_single_i_at_end():
+    """'The Last of Us Part I' normalizes to 'part 1' — a 'Part 1 - PS5'
+    title must exact-match it (single 'i' roman conversion, final token only)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "The Last of Us Part 1 - PlayStation 5", platform="playstation 5", source="bestbuy")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "last part 1": [
+                {"id": 204350, "name": "The Last of Us Part I", "platforms": [6, 167]},
+            ]
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 204350
+    conn.close()
+
+
+def test_igdb_search_term_strips_version_word():
+    assert assets.igdb_search_term("Wreckfest PlayStation®5 Version (Game)") == "wreckfest"
