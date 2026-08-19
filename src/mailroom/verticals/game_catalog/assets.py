@@ -399,6 +399,14 @@ def owned_games(context: AssetExecutionContext) -> None:
              ON p.source = c.source AND p.order_number = c.order_number AND p.item_key = c.item_key
            WHERE c.classification = 'playstation_game'"""
     ).fetchall()
+    # Deterministic merge order: PS+ claim rows ($0 PSN items) first, paid rows
+    # last, so a game with ANY real purchase ends 'purchased' (min-rank
+    # semantics) and a claim-only game ends 'psplus_claimed' — independent of
+    # row iteration order (Witcher 3: paid receipt + later $0 PS+ claim).
+    rows = sorted(
+        rows,
+        key=lambda r: 0 if (r["source"] == "psn_receipt" and _price_is_zero(r["item_price"])) else 1,
+    )
     added = 0
     for row in rows:
         # psn_receipt = PlayStation Store; cdkeys/gameflip = digital key codes —
