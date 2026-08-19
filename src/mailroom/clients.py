@@ -229,6 +229,21 @@ class IgdbClient:
             ps = [r for r in rows if any(p in (r.get("platforms") or []) for p in self.PS_PLATFORM_IDS)]
             return ps or rows
 
+        # Single-token terms go to the EXACT-NAME query first: 'Endling' must
+        # resolve to 'Endling' (187734), not the search clause's
+        # 'Endling: Extinction is Forever' (which the single-token guard then
+        # rejects), and 'Journey' must not land on 'The Sims 4: Journey to
+        # Batuu'. `name ~ "term"` (case-insensitive equality, no stars) returns
+        # every game whose name IS the term — the right answer for a short
+        # title whenever one exists.
+        single = len(re.findall(r"[a-z0-9]+", safe)) == 1
+        if single:
+            rows_eq = self._apicalypse(
+                "games",
+                f'fields id,name,platforms,first_release_date; where name ~ "{safe}"; limit 10;',
+            )
+            if rows_eq:
+                return rows_eq
         rows = self._apicalypse(
             "games",
             f'fields id,name,platforms,first_release_date; search "{safe}"; limit 10;',
@@ -241,16 +256,15 @@ class IgdbClient:
         # exact-name query gets a chance to surface the actual 'Dreams').
         if rows and any(safe in re.split(r"\W+", (r.get("name") or "").lower()) for r in rows):
             return _ps_first(rows)
-        # 1) Exact-name: `name ~ "term"` (case-insensitive equality, no stars)
-        #    — the reliable path for common words ('Below', 'Dreams',
-        #    'Control'). All exact-name entries returned as-is (no PS-first —
-        #    any of them IS the game; the matcher platform-prefers among them).
-        rows_eq = self._apicalypse(
-            "games",
-            f'fields id,name,platforms,first_release_date; where name ~ "{safe}"; limit 10;',
-        )
-        if rows_eq:
-            return rows_eq
+        # 1) Exact-name for multi-token terms (usually empty — names rarely
+        #    equal the stripped phrase).
+        if not single:
+            rows_eq = self._apicalypse(
+                "games",
+                f'fields id,name,platforms,first_release_date; where name ~ "{safe}"; limit 10;',
+            )
+            if rows_eq:
+                return rows_eq
         # 2) Substring as a last resort ('The Gardens Between' for the term
         #    'gardens between'); return ALL rows so the exact-name check in the
         #    matcher is never starved.
