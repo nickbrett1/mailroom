@@ -73,8 +73,9 @@ def test_igdb_search_terms_fallbacks():
     terms = assets.igdb_search_terms("DIRT5")
     assert "dirt 5" in terms  # digit-split recovers the space
     terms = assets.igdb_search_terms("God of War III Remastered Standard Edition - PlayStation 4")
-    assert terms[0] == "god war iii standard"  # stripped
+    assert terms[0] == "god war iii"  # stripped (edition phrases removed whole)
     assert "god of war iii remastered standard edition - playstation 4" in terms  # raw fallback
+    assert "god war 3" in terms  # roman -> digits variant
     terms = assets.igdb_search_terms("CoffeeTalk")
     assert terms[0] == "coffeetalk"
 
@@ -308,4 +309,110 @@ def test_owned_games_merge_order_paid_receipt_wins_over_claim():
     conn = connect(f"sqlite:///{db}")
     row = conn.execute("SELECT ownership_class, price FROM owned_games").fetchone()
     assert row["ownership_class"] == "purchased"  # the $39.99 purchase wins
+    conn.close()
+
+
+class _ExactKeyStub(_StubIgdb):
+    """search stub keyed on the FULL normalized term (not substring), so a
+    multi-term search ('gods' vs 'gods remastered') returns different results."""
+
+    def search_game(self, name: str) -> list[dict]:
+        key = name.strip().lower()
+        if key in self.search:
+            return self.search[key]
+        return []
+
+
+def test_igdb_matches_multi_term_exact_surfaces_gods_remastered():
+    """GODS Remastered case: stripped term 'gods' ranks God of War Ragnarök
+    first, but the raw term 'gods remastered' surfaces the exact entry — the
+    matcher must search every term and prefer the exact-name result."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "GODS Remastered", platform="playstation 4", source="psn_api")
+    conn.close()
+
+    stub = _ExactKeyStub(
+        search={
+            "gods": [{"id": 112875, "name": "God of War Ragnarök", "platforms": [48, 167]}],
+            "gods remastered": [{"id": 112099, "name": "Gods Remastered", "platforms": [48, 130]}],
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 112099, "must pick the exact-name Gods Remastered, not Ragnarök"
+    conn.close()
+
+
+def test_igdb_matches_single_token_title_not_blindly_matched():
+    """Unplugged case: a single-token title must NOT auto-link to a
+    wrong-but-popular entry (Rock Band Unplugged) when there's no exact name."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Unplugged", platform="playstation 5", psn_content_id="UP3535-PPSA14005_00-0297859396070977", source="psn_api")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "unplugged": [{"id": 2721, "name": "Rock Band Unplugged", "platforms": [38]}],
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] is None, "ambiguous short title must stay unmatched (manual review), not Rock Band Unplugged"
+    conn.close()
+
+
+def test_igdb_matches_token_gate_rejects_unrelated_first_result():
+    """The Music of Dreams case: no exact IGDB game exists; the gated fallback
+    must reject 'High School Musical: Livin' the Dream' (no token overlap on
+    'music'/'dreams') instead of linking a random game."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "The Music of Dreams", platform="playstation 4", psn_content_id="UP9000-CUSA18544_00-DREAMSOST0000001", source="psn_api")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "music dreams": [{"id": 49478, "name": "High School Musical: Livin' the Dream", "platforms": [38]}],
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] is None, "must not match the Dreams OST to a random High School Musical game"
+    conn.close()
+
+
+def test_igdb_matches_roman_numeral_sequel():
+    """God of War III Remastered case: 'iii' normalizes to '3' so the sequel
+    search term finds the correct entry; the PS4 copy picks the Remastered
+    entry over the 2010 PS3 original."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "God of War III Remastered Standard Edition - PlayStation 4", platform="playstation 4", source="gamestop")
+    conn.close()
+
+    stub = _ExactKeyStub(
+        search={
+            "god war iii": [
+                {"id": 1112, "name": "God of War III", "platforms": [9]},
+                {"id": 15854, "name": "God of War III Remastered", "platforms": [48]},
+            ],
+            "god war 3": [
+                {"id": 1112, "name": "God of War III", "platforms": [9]},
+                {"id": 15854, "name": "God of War III Remastered", "platforms": [48]},
+            ],
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 15854, "must pick the PS4 God of War III Remastered, not the 2010 original"
     conn.close()

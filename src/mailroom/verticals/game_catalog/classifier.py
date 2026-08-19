@@ -76,7 +76,10 @@ def classify_item(title: str, platform_hint: str | None = None, variant: str | N
         return Classification("playstation_game", platform=ps_match.group(1), reason="platform match")
     if paren_match:
         return Classification("playstation_game", platform=f"playstation {paren_match.group(1)}", reason="parenthetical platform")
-    if "playstation" in text or "ps4" in text or "ps5" in text:
+    # Word-boundary PS4/PS5 so 'MPS4' (a Master Plunger SKU, not a platform)
+    # can't classify a plunger as a PlayStation game. 'playstation' is kept
+    # as a bare substring — no real word embeds it.
+    if "playstation" in text or re.search(r"\bps4\b|\bps5\b", text):
         return Classification("playstation_game", platform="playstation", reason="keyword")
 
     return Classification("needs_review", reason="platform ambiguous")

@@ -27,6 +27,7 @@ def db_url_resource(context) -> str:  # type: ignore[no-untyped-def]
     """
     return os.environ.get("MAILROOM_DB_URL", "sqlite:////data/mailroom.db")
 from mailroom.verticals.game_catalog.assets import (
+    catalog_quality_repairs,
     catalog_views,
     classified_game_items,
     dedupe_owned_games,
@@ -89,11 +90,19 @@ psn_sync_schedule = ScheduleDefinition(
 
 # Catalog recheck — re-match EVERY owned row with the exact-name/platform
 # matcher + refresh metadata + views (heals wrong IGDB picks like Elden Ring
-# -> Nightreign). Trigger from the UI (Jobs tab -> Launch) or via the
-# igdb_matches asset's config (Materialize with config {"recheck": true}).
+# -> Nightreign). catalog_quality_repairs runs after the re-match to split
+# jammed rows / retire junk that the matcher can't undo. Trigger from the UI
+# (Jobs tab -> Launch) or via the igdb_matches asset's config (Materialize
+# with config {"recheck": true}).
 catalog_recheck_job = define_asset_job(
     "catalog_recheck",
-    selection=AssetSelection.keys("igdb_matches", "dedupe_owned_games", "game_metadata", "catalog_views"),
+    selection=AssetSelection.keys(
+        "igdb_matches",
+        "dedupe_owned_games",
+        "catalog_quality_repairs",
+        "game_metadata",
+        "catalog_views",
+    ),
     config={"ops": {"igdb_matches": {"config": {"recheck": True}}}},
 )
 
@@ -108,6 +117,7 @@ definitions = Definitions(
         psn_api_owned,
         igdb_matches,
         dedupe_owned_games,
+        catalog_quality_repairs,
         game_metadata,
         catalog_views,
     ],

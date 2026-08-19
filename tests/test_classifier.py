@@ -41,3 +41,17 @@ def test_cable_with_ps4_compatibility_is_accessory():
 def test_hdmi_cable_with_ps5_compatibility_is_accessory():
     c = classify_item("Highwings 8K 10K 4K HDMI Cable, HDCP 2.2, HDR10 Compatible with Roku TV/PS5/HDTV")
     assert c.classification == "accessory_hardware"
+
+
+def test_mps4_sku_is_not_a_playstation_game():
+    """'Master Plunger MPS4 Sink' — the 'ps4' substring inside 'MPS4' must
+    not classify a plunger as a PlayStation game (data-quality bug: a
+    cancelled Amazon order entered the catalog as a 'game')."""
+    c = classify_item('Master Plunger MPS4 Sink ..." has been canceled')
+    assert c.classification == "needs_review"
+
+
+def test_ps4_keyword_still_word_boundary():
+    # Real PlayStation titles keep matching.
+    c = classify_item("Sonic Superstars PS4")
+    assert c.classification == "playstation_game"
