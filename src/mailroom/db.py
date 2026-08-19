@@ -219,6 +219,11 @@ def connect(database_url: str | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # WAL allows ONE writer at a time; without a busy timeout, a concurrent
+    # writer (e.g. two Dagster runs landing at once) fails instantly with
+    # 'database is locked'. Wait up to 30s for the lock instead (seen live
+    # 2026-08-19: two owned_games runs collided after a container restart).
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
