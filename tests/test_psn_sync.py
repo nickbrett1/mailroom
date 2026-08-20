@@ -105,7 +105,13 @@ def test_exchange_npsso_flow():
         if "oauth/authorize" in request.url.path:
             assert "npsso=abc123" in request.headers.get("Cookie", "")
             assert request.url.params["response_type"] == "code"
-            return httpx.Response(302, headers={"location": f"{mint.PsnApiClient.REDIRECT_URI}?code=AUTHCODE1"})
+            return httpx.Response(
+                302,
+                headers={
+                    "location": f"{mint.PsnApiClient.REDIRECT_URI}?code=AUTHCODE1",
+                    "set-cookie": "_exp=eyJ0; _to=abc; _sid=xyz",
+                },
+            )
         assert "oauth/token" in request.url.path
         return httpx.Response(200, json={"access_token": "at", "refresh_token": "rt", "expires_in": 3600})
 
@@ -116,6 +122,7 @@ def test_exchange_npsso_flow():
         transport = httpx.MockTransport(handler)
         tokens = mint.exchange_npsso("abc123", client=httpx.Client(transport=transport))
         assert tokens["refresh_token"] == "rt"
+        assert tokens["cookies"] and tokens["cookies"].get("_exp") == "eyJ0"
     finally:
         os.environ.pop("PSN_CLIENT_SECRET", None)
 
@@ -175,10 +182,11 @@ def test_credential_helpers_and_owned_games_migration():
 
 
 class _StubPsn:
-    def __init__(self, titles, error=None, trophies=None):
+    def __init__(self, titles, error=None, trophies=None, games=None):
         self.titles = titles
         self.error = error
         self.trophies = trophies if trophies is not None else []
+        self.games = games if games is not None else []
 
     def library_titles(self):
         if self.error:
@@ -189,6 +197,11 @@ class _StubPsn:
         if self.error:
             raise self.error
         return self.trophies
+
+    def game_list(self, cookies):
+        if self.error:
+            raise self.error
+        return self.games
 
 
 def _ctx(db_url, stub):
@@ -220,10 +233,10 @@ def test_psn_api_owned_auth_error_degrades():
 
 TROPHY_ITEMS = [
     {
-        "npCommunicationId": "UP9000-CUSA07408_00-00000000GODOFWAR",
+        "npCommunicationId": "NPWR11111_00",  # same NPWR id as GAME_LIST_ITEMS[0]
         "trophyTitleName": "God of War",
         "trophyTitlePlatform": "PS4",
-        "playDuration": "PT24H15M",
+        # no playDuration — the trophy API does not return playtime (verified)
         "earnedTrophies": {"bronze": 24, "silver": 7, "gold": 5, "platinum": 1, "total": 37},
         "definedTrophies": {"bronze": 24, "silver": 7, "gold": 5, "platinum": 1, "total": 37},
         "progress": 100,
@@ -233,7 +246,6 @@ TROPHY_ITEMS = [
         "npCommunicationId": "UP9000-CUSA12345_00-SOMEEXTRAGAME",
         "trophyTitleName": "Some Extra Catalog Game",
         "trophyTitlePlatform": "PS5",
-        # no playDuration -> never played
         "earnedTrophies": {"bronze": 0, "silver": 0, "gold": 0, "platinum": 0, "total": 0},
         "definedTrophies": {"bronze": 10, "silver": 5, "gold": 3, "platinum": 1, "total": 19},
         "progress": 0,
@@ -258,8 +270,7 @@ def test_trophy_titles_exchanges_token_and_paginates():
     titles = client.trophy_titles()
     assert calls["n"] == 2  # paginated 1 at a time
     assert len(titles) == 2
-    assert titles[0]["npCommunicationId"] == "UP9000-CUSA07408_00-00000000GODOFWAR"
-    assert titles[0]["playDuration"] == "PT24H15M"
+    assert titles[0]["npCommunicationId"] == "NPWR11111_00"
 
 
 def test_trophy_item_normalization():
@@ -272,9 +283,9 @@ def test_trophy_item_normalization():
     assert iso8601_duration_minutes("garbage") is None
 
     s = psn_trophy_item_to_stats(TROPHY_ITEMS[0])
-    assert s["trophy_title_id"] == "UP9000-CUSA07408_00-00000000GODOFWAR"
+    assert s["trophy_title_id"] == "NPWR11111_00"
     assert s["normalized_title"] == "god of war"
-    assert s["playtime_minutes"] == 1455
+    assert s["playtime_minutes"] is None  # trophy API has no playtime
     assert s["trophies_earned"] == 37
     assert s["trophies_defined"] == 37
     assert s["progress"] == 100
@@ -289,6 +300,43 @@ def test_trophy_item_normalization():
     assert s2["normalized_title"] == "test"  # ™ stripped
 
 
+GAME_LIST_ITEMS = [
+    {
+        "titleId": "NPWR11111_00",
+        "name": "God of War",
+        "playDuration": "PT47H20M",
+        "category": "full_game",
+    },
+    {
+        "titleId": "NPWR22222_00",
+        "name": "ELDEN RING",
+        "playDuration": "PT0M",
+        "category": "full_game",
+    },
+]
+
+
+def test_game_list_cookie_auth_and_parse():
+    from mailroom.clients import psn_game_list_item_to_stats
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/oauth/token"):
+            return httpx.Response(200, json=REFRESH_BODY)
+        assert "_exp=eyJ0; _to=abc" in request.headers.get("Cookie", "")
+        if "gameList" in request.url.path:
+            return httpx.Response(200, json={"games": GAME_LIST_ITEMS})
+        return httpx.Response(404)
+
+    client = _psn_client(handler)
+    games = client.game_list({"_exp": "eyJ0", "_to": "abc"})
+    assert len(games) == 2
+    s = psn_game_list_item_to_stats(games[0])
+    assert s["trophy_title_id"] == "NPWR11111_00"
+    assert s["playtime_minutes"] == 47 * 60 + 20
+    assert s["normalized_title"] == "god of war"
+    assert psn_game_list_item_to_stats({"no": "key"}) is None
+
+
 def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")
@@ -296,6 +344,7 @@ def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
     from mailroom.db import set_credential, upsert_owned_game
 
     set_credential(conn, "psn", token="rt-123")
+    set_credential(conn, "psn_cookies", token='{"_exp": "eyJ0"}', status="valid")
     upsert_owned_game(
         conn,
         {
@@ -312,24 +361,42 @@ def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
     )
     conn.close()
 
-    assets.psn_playtime(_ctx(f"sqlite:///{db}", _StubPsn([], trophies=TROPHY_ITEMS)))
+    # trophy pass (playtime None) + gameList pass (playtime from cookies)
+    assets.psn_playtime(_ctx(f"sqlite:///{db}", _StubPsn([], trophies=TROPHY_ITEMS, games=GAME_LIST_ITEMS)))
     conn = connect(f"sqlite:///{db}")
     row = conn.execute("SELECT * FROM game_stats ORDER BY trophy_title_id").fetchone()
-    assert row["trophy_title_id"] == "UP9000-CUSA07408_00-00000000GODOFWAR"
+    assert row["trophy_title_id"] == "NPWR11111_00"
     assert row["normalized_title"] == "god of war"
-    assert row["playtime_minutes"] == 1455
+    assert row["playtime_minutes"] == 47 * 60 + 20  # gameList playtime wins
     assert row["trophies_earned"] == 37
     assert row["progress"] == 100
 
     v = conn.execute("SELECT title, hours_played, playtime_minutes, trophy_progress FROM catalog_views").fetchone()
     assert v["title"] == "God of War"
-    assert v["hours_played"] == 24.3  # 1455 / 60 = 24.25 -> ROUND(...,1)
-    assert v["playtime_minutes"] == 1455
+    assert v["hours_played"] == 47.3  # 2840 / 60 = 47.33 -> ROUND(...,1)
+    assert v["playtime_minutes"] == 2840
     assert v["trophy_progress"] == 100
 
-    # re-run is an upsert (idempotent, count stays 2)
+    # re-run is an upsert (idempotent, count stays 2 + the no-trophy gameList game)
+    assets.psn_playtime(_ctx(f"sqlite:///{db}", _StubPsn([], trophies=TROPHY_ITEMS, games=GAME_LIST_ITEMS)))
+    assert conn.execute("SELECT COUNT(*) n FROM game_stats").fetchone()["n"] == 3
+    conn.close()
+
+
+def test_psn_playtime_falls_back_to_trophies_without_cookies():
+    """No psn_cookies credential -> gameList skipped, trophy stats still land."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    from mailroom.db import set_credential
+
+    set_credential(conn, "psn", token="rt-123")
+    conn.close()
     assets.psn_playtime(_ctx(f"sqlite:///{db}", _StubPsn([], trophies=TROPHY_ITEMS)))
-    assert conn.execute("SELECT COUNT(*) n FROM game_stats").fetchone()["n"] == 2
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM game_stats").fetchone()
+    assert row["trophies_earned"] == 37
+    assert row["playtime_minutes"] is None
     conn.close()
 
 

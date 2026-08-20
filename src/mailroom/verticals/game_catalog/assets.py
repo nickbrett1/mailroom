@@ -21,6 +21,7 @@ from dagster import (
 
 from mailroom.clients import (
     PsnAuthError,
+    psn_game_list_item_to_stats,
     psn_library_item_to_game,
     psn_trophy_item_to_stats,
     recover_webview_html,
@@ -293,9 +294,51 @@ def psn_playtime(context: AssetExecutionContext) -> None:
             ),
         )
         upserted += 1
+
+    # Playtime: the Game Library Service (gameList) needs the NPSSO session
+    # cookies (Bearer scope 403s). Same NPWR key as the trophy stats, so
+    # playtime lands on the same game_stats rows; games with playtime but no
+    # trophy set get their own rows (0 trophies).
+    played = 0
+    cookies_raw = (get_credential(conn, "psn_cookies") or {}).get("token")
+    if cookies_raw:
+        try:
+            cookies = json.loads(cookies_raw)
+            games = context.resources.psn_api.game_list(cookies)
+            if games:
+                first = games[0]
+                with_pd = sum(1 for g in games if g.get("playDuration") is not None)
+                context.log.info(
+                    f"psn_playtime: gameList n={len(games)} with_playDuration={with_pd} "
+                    f"keys={sorted(first.keys())} sample={str(first)[:180]}"
+                )
+                for g in games:
+                    s = psn_game_list_item_to_stats(g)
+                    if not s:
+                        continue
+                    conn.execute(
+                        """INSERT INTO game_stats(trophy_title_id, title, normalized_title,
+                               playtime_minutes, trophies_earned, trophies_defined, progress,
+                               last_update, updated_at)
+                           VALUES (?, ?, ?, ?, 0, 0, 0, NULL, datetime('now'))
+                           ON CONFLICT(trophy_title_id) DO UPDATE SET
+                             title = excluded.title,
+                             normalized_title = excluded.normalized_title,
+                             playtime_minutes = excluded.playtime_minutes,
+                             updated_at = datetime('now')""",
+                        (s["trophy_title_id"], s["title"], s["normalized_title"], s["playtime_minutes"]),
+                    )
+                    played += 1
+            else:
+                context.log.warning("psn_playtime: gameList returned nothing (cookies stale? re-paste an NPSSO)")
+        except (PsnAuthError, httpx.HTTPError, ValueError) as exc:
+            context.log.warning(f"psn_playtime: gameList failed ({exc}) — playtime skipped; re-paste an NPSSO if cookies expired")
+    else:
+        context.log.warning("psn_playtime: no psn_cookies credential — playtime needs an NPSSO exchange (POST /manual/psn-credential)")
+
     conn.commit()
     conn.close()
-    context.log.info(f"psn_playtime: upserted {upserted} title stats")
+    context.log.info(f"psn_playtime: upserted {upserted} trophy stats, {played} playtime rows")
 
 
 @asset(required_resource_keys={"db_url", "msgvault"})

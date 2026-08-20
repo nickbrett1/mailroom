@@ -355,6 +355,50 @@ class PsnApiClient:
         )
 
     TROPHY_URL = "https://m.np.playstation.com/api/trophy/v1/users/me/trophyTitles"
+    GAME_LIST_URL = "https://m.np.playstation.com/api/gameLibraryService/v3/users/me/gameList"
+    GAME_LIST_URL_V2 = "https://m.np.playstation.com/api/gameLibraryService/v2/users/me/gameList"
+
+    def game_list(self, cookies: dict[str, str], limit: int = 500) -> list[dict[str, Any]]:
+        """Playtime pull from the PS App Game Library Service (cookie session).
+
+        The Bearer-token scope 403s on this endpoint (verified live
+        2026-08-20) — it needs the session cookies from the NPSSO authorize
+        exchange. Item shape is probed live (log-only until confirmed): fields
+        expected include titleId (NPWR), name and playDuration (ISO-8601,
+        'PT47H20M'). Tries v3 then v2; the Bearer is attached too (harmless if
+        the cookies suffice, needed if the API accepts either).
+        """
+        cookie_hdr = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        headers = {"Cookie": cookie_hdr, "User-Agent": self.USER_AGENT}
+        try:
+            headers["Authorization"] = f"Bearer {self._access_token()}"
+        except PsnAuthError:
+            pass  # cookie session may be sufficient on its own
+        for url in (self.GAME_LIST_URL, self.GAME_LIST_URL_V2):
+            page: list[dict[str, Any]] = []
+            offset = 0
+            try:
+                while True:
+                    resp = self._client.get(
+                        url, headers=headers,
+                        params={"limit": min(limit, 100), "offset": offset},
+                    )
+                    if resp.status_code in (401, 403):
+                        break  # this endpoint/auth variant is not permitted
+                    resp.raise_for_status()
+                    data = resp.json() or {}
+                    items = data.get("games") or []
+                    page.extend(items)
+                    if len(items) < min(limit, 100) or not items:
+                        break
+                    offset += len(items)
+                if page:
+                    return page
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 403:
+                    continue
+                raise
+        return []
 
     def trophy_titles(self, limit: int = 800) -> list[dict[str, Any]]:
         """Per-title trophy pull from the Trophy API (paginated).
@@ -571,6 +615,28 @@ def _trophy_total(counts: Any) -> int:
             return int(counts["total"] or 0)
         return sum(int(v or 0) for k, v in counts.items() if k in ("bronze", "silver", "gold", "platinum"))
     return int(counts or 0)
+
+
+def psn_game_list_item_to_stats(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize a Game Library Service entry into a game_stats row.
+
+    Same NPWR key as the trophy stats (titleId == npCommunicationId), so
+    playtime from gameList fills game_stats.playtime_minutes on the rows the
+    trophy pass created. playDuration is ISO-8601 ('PT47H20M') -> minutes;
+    absent -> None (no playtime recorded by PSN).
+    """
+    from mailroom.verticals.game_catalog.parsers.psn import normalize_title
+
+    npid = item.get("titleId") or item.get("npCommunicationId")
+    name = item.get("name") or item.get("title")
+    if not npid or not name:
+        return None
+    return {
+        "trophy_title_id": npid,
+        "title": name,
+        "normalized_title": normalize_title(name).replace("™", "").replace("®", "").replace("©", ""),
+        "playtime_minutes": iso8601_duration_minutes(item.get("playDuration")),
+    }
 
 
 def psn_trophy_item_to_stats(item: dict[str, Any]) -> dict[str, Any] | None:

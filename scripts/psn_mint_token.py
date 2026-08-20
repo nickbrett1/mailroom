@@ -154,7 +154,14 @@ def exchange_npsso(npsso: str, client: httpx.Client | None = None) -> dict:
                 f"authorize failed (NPSSO may be expired/incorrect): HTTP {resp.status_code} -> {location[:200]}"
             )
         raise RuntimeError(f"authorize returned no code in Location: HTTP {resp.status_code} -> {location[:200]}")
-    return exchange_code(m.group(1), client=c)
+    tokens = exchange_code(m.group(1), client=c)
+    # The authorize response also SETS the m.np.playstation.com session
+    # cookies (_exp/_to/_t/_sk/_sid/...) — the Bearer-token scope 403s on the
+    # gameList playtime endpoint, but this cookie jar unlocks it. Capture for
+    # psn_playtime (gameLibraryService).
+    cookies = {k: v for k, v in (resp.cookies or {}).items()} if resp.cookies else {}
+    tokens["cookies"] = cookies or None
+    return tokens
 
 
 def store_refresh_token(db_url: str, refresh_token: str) -> None:
