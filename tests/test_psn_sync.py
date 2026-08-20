@@ -198,7 +198,7 @@ class _StubPsn:
             raise self.error
         return self.trophies
 
-    def game_list(self, cookies):
+    def game_list(self, cookies, access_token=None):
         if self.error:
             raise self.error
         return self.games

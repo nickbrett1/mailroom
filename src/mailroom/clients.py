@@ -358,46 +358,41 @@ class PsnApiClient:
     GAME_LIST_URL = "https://m.np.playstation.com/api/gameLibraryService/v3/users/me/gameList"
     GAME_LIST_URL_V2 = "https://m.np.playstation.com/api/gameLibraryService/v2/users/me/gameList"
 
-    def game_list(self, cookies: dict[str, str], limit: int = 500) -> list[dict[str, Any]]:
-        """Playtime pull from the PS App Game Library Service (cookie session).
+    def game_list(self, cookies: dict[str, str], limit: int = 500, access_token: str | None = None) -> list[dict[str, Any]]:
+        """Playtime pull from the PS App Game Library Service.
 
-        The Bearer-token scope 403s on this endpoint (verified live
-        2026-08-20) — it needs the session cookies from the NPSSO authorize
-        exchange. Item shape is probed live (log-only until confirmed): fields
-        expected include titleId (NPWR), name and playDuration (ISO-8601,
-        'PT47H20M'). Tries v3 then v2; the Bearer is attached too (harmless if
-        the cookies suffice, needed if the API accepts either).
+        Auth is finicky (verified live 2026-08-20: the refresh-derived Bearer
+        scope 403s): try v3 then v2 with (a) cookies only and (b) cookies +
+        Bearer, using the freshest access token available. Every attempt's
+        status is recorded in `self.last_game_list_probe` for diagnostics.
+        Item fields expected: titleId (NPWR), name, playDuration (ISO-8601).
         """
+        self.last_game_list_probe: dict[str, Any] = {}
         cookie_hdr = "; ".join(f"{k}={v}" for k, v in cookies.items())
-        headers = {"Cookie": cookie_hdr, "User-Agent": self.USER_AGENT}
-        try:
-            headers["Authorization"] = f"Bearer {self._access_token()}"
-        except PsnAuthError:
-            pass  # cookie session may be sufficient on its own
-        for url in (self.GAME_LIST_URL, self.GAME_LIST_URL_V2):
-            page: list[dict[str, Any]] = []
-            offset = 0
+        bearer = access_token
+        if not bearer:
             try:
-                while True:
-                    resp = self._client.get(
-                        url, headers=headers,
-                        params={"limit": min(limit, 100), "offset": offset},
-                    )
-                    if resp.status_code in (401, 403):
-                        break  # this endpoint/auth variant is not permitted
-                    resp.raise_for_status()
+                bearer = self._access_token()
+            except PsnAuthError:
+                bearer = None
+        for url in (self.GAME_LIST_URL, self.GAME_LIST_URL_V2):
+            variant = url.rsplit("/", 1)[-1]
+            for auth, headers in (
+                ("cookies-only", {"Cookie": cookie_hdr, "User-Agent": self.USER_AGENT}),
+                ("cookies+bearer", {"Cookie": cookie_hdr, "User-Agent": self.USER_AGENT,
+                                    **({"Authorization": f"Bearer {bearer}"} if bearer else {})}),
+            ):
+                try:
+                    resp = self._client.get(url, headers=headers, params={"limit": min(limit, 100), "offset": 0})
+                    self.last_game_list_probe[f"{variant}/{auth}"] = {"status": resp.status_code, "body": resp.text[:100]}
+                    if resp.status_code != 200:
+                        continue
                     data = resp.json() or {}
                     items = data.get("games") or []
-                    page.extend(items)
-                    if len(items) < min(limit, 100) or not items:
-                        break
-                    offset += len(items)
-                if page:
-                    return page
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 403:
-                    continue
-                raise
+                    if items:
+                        return items
+                except Exception as exc:  # noqa: BLE001 — diagnostics
+                    self.last_game_list_probe[f"{variant}/{auth}"] = {"error": str(exc)[:100]}
         return []
 
     def trophy_titles(self, limit: int = 800) -> list[dict[str, Any]]:

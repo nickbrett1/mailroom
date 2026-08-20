@@ -301,10 +301,14 @@ def psn_playtime(context: AssetExecutionContext) -> None:
     # trophy set get their own rows (0 trophies).
     played = 0
     cookies_raw = (get_credential(conn, "psn_cookies") or {}).get("token")
+    access = (get_credential(conn, "psn_access") or {}).get("token")
     if cookies_raw:
         try:
             cookies = json.loads(cookies_raw)
-            games = context.resources.psn_api.game_list(cookies)
+            context.log.info(f"psn_playtime: cookie keys={sorted(cookies.keys())} has_access={bool(access)}")
+            games = context.resources.psn_api.game_list(cookies, access_token=access)
+            probe = getattr(context.resources.psn_api, "last_game_list_probe", {})
+            context.log.info(f"psn_playtime: gameList probe={probe}")
             if games:
                 first = games[0]
                 with_pd = sum(1 for g in games if g.get("playDuration") is not None)
@@ -330,9 +334,9 @@ def psn_playtime(context: AssetExecutionContext) -> None:
                     )
                     played += 1
             else:
-                context.log.warning("psn_playtime: gameList returned nothing (cookies stale? re-paste an NPSSO)")
+                context.log.warning("psn_playtime: gameList returned nothing — see probe log (cookies/scope)")
         except (PsnAuthError, httpx.HTTPError, ValueError) as exc:
-            context.log.warning(f"psn_playtime: gameList failed ({exc}) — playtime skipped; re-paste an NPSSO if cookies expired")
+            context.log.warning(f"psn_playtime: gameList failed ({exc}) — playtime skipped")
     else:
         context.log.warning("psn_playtime: no psn_cookies credential — playtime needs an NPSSO exchange (POST /manual/psn-credential)")
 
