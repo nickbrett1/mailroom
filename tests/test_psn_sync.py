@@ -272,7 +272,8 @@ def test_trophy_item_normalization():
     assert iso8601_duration_minutes("garbage") is None
 
     s = psn_trophy_item_to_stats(TROPHY_ITEMS[0])
-    assert s["psn_content_id"] == "UP9000-CUSA07408_00-00000000GODOFWAR"
+    assert s["trophy_title_id"] == "UP9000-CUSA07408_00-00000000GODOFWAR"
+    assert s["normalized_title"] == "god of war"
     assert s["playtime_minutes"] == 1455
     assert s["trophies_earned"] == 37
     assert s["trophies_defined"] == 37
@@ -305,7 +306,9 @@ def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
 
     assets.psn_playtime(_ctx(f"sqlite:///{db}", _StubPsn([], trophies=TROPHY_ITEMS)))
     conn = connect(f"sqlite:///{db}")
-    row = conn.execute("SELECT * FROM game_stats").fetchone()
+    row = conn.execute("SELECT * FROM game_stats ORDER BY trophy_title_id").fetchone()
+    assert row["trophy_title_id"] == "UP9000-CUSA07408_00-00000000GODOFWAR"
+    assert row["normalized_title"] == "god of war"
     assert row["playtime_minutes"] == 1455
     assert row["trophies_earned"] == 37
     assert row["progress"] == 100

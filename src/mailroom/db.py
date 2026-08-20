@@ -122,10 +122,14 @@ CREATE INDEX IF NOT EXISTS idx_owned_games_platform ON owned_games(platform);
 -- (The DDL lives in _ensure_dedup_index, not here, so a fresh CREATE UNIQUE
 -- INDEX on an already-dirty table doesn't fail init_db.)
 
--- PSN trophy/playtime stats per content id (psn_playtime asset). Keyed on
--- psn_content_id (npCommunicationId) so it joins owned_games 1:1 per SKU.
+-- PSN trophy stats per trophy set (psn_playtime asset). Keyed on the NPWR
+-- trophy-set id (the trophy API's only stable key — no content id in the
+-- response); joined to owned_games by normalized_title. playtime_minutes is
+-- reserved for a playtime-capable auth path (trophy API has none).
 CREATE TABLE IF NOT EXISTS game_stats (
-    psn_content_id TEXT PRIMARY KEY,
+    trophy_title_id TEXT PRIMARY KEY,
+    title TEXT,
+    normalized_title TEXT,
     playtime_minutes INTEGER,
     trophies_earned INTEGER,
     trophies_defined INTEGER,
@@ -133,6 +137,7 @@ CREATE TABLE IF NOT EXISTS game_stats (
     last_update TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_game_stats_norm ON game_stats(normalized_title);
 
 -- IGDB match results with confidence.
 CREATE TABLE IF NOT EXISTS igdb_matches (
@@ -189,11 +194,10 @@ SELECT
     s.progress AS trophy_progress
 FROM owned_games g
 LEFT JOIN game_metadata m ON m.igdb_id = g.igdb_id
--- Playtime/trophies from the Trophy API, keyed on the FIRST content id when a
--- merged row carries several (per-SKU stats; the row's primary SKU is first).
-LEFT JOIN game_stats s ON s.psn_content_id = COALESCE(
-    NULLIF(substr(g.psn_content_id, 1, instr(g.psn_content_id, ',') - 1), ''),
-    g.psn_content_id)
+-- Trophy stats join by normalized title (the trophy API exposes only the NPWR
+-- set id, which does not map to the content id; names normalize like store
+-- titles). A dual-SKU title gets the same stats on both rows (shared set).
+LEFT JOIN game_stats s ON s.normalized_title = g.normalized_title
 WHERE g.is_owned = 1;
 
 -- Source authentication (PSN PS-App OAuth refresh token, future API sources).
@@ -266,6 +270,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE owned_games ADD COLUMN ownership_class TEXT DEFAULT 'purchased'")
     if "retire_reason" not in cols:
         conn.execute("ALTER TABLE owned_games ADD COLUMN retire_reason TEXT")
+    # game_stats predates the trophy-title join (created 2026-08-20 with NPWR
+    # ids stuffed into psn_content_id and no title column — unusable). Recreate
+    # with the NPWR key + normalized_title join.
+    gs = {r["name"] for r in conn.execute("PRAGMA table_info(game_stats)").fetchall()}
+    if gs and "normalized_title" not in gs:
+        conn.execute("DROP TABLE game_stats")
+        conn.execute(
+            """CREATE TABLE game_stats (
+                 trophy_title_id TEXT PRIMARY KEY,
+                 title TEXT,
+                 normalized_title TEXT,
+                 playtime_minutes INTEGER,
+                 trophies_earned INTEGER,
+                 trophies_defined INTEGER,
+                 progress REAL,
+                 last_update TEXT,
+                 updated_at TEXT DEFAULT (datetime('now'))
+               )"""
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_game_stats_norm ON game_stats(normalized_title)")
 
 
 def _ensure_dedup_index(conn: sqlite3.Connection) -> None:
