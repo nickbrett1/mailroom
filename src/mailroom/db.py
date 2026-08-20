@@ -256,40 +256,51 @@ def connect(database_url: str | None = None) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     """Create schema if not present, plus lightweight column migrations and the
-    dedup guard index (dedupes existing duplicates first — catalog-dedup-fix)."""
-    conn.executescript(SCHEMA)
+    dedup guard index (dedupes existing duplicates first — catalog-dedup-fix).
+
+    _migrate runs FIRST so table reshapes (game_stats) land before the SCHEMA
+    creates views that reference the new columns (catalog_views joins
+    game_stats.normalized_title).
+    """
     _migrate(conn)
+    conn.executescript(SCHEMA)
     _ensure_dedup_index(conn)
     conn.commit()
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Additive column migrations for databases created before a schema change."""
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(owned_games)").fetchall()}
-    if "ownership_class" not in cols:
-        conn.execute("ALTER TABLE owned_games ADD COLUMN ownership_class TEXT DEFAULT 'purchased'")
-    if "retire_reason" not in cols:
-        conn.execute("ALTER TABLE owned_games ADD COLUMN retire_reason TEXT")
+    """Additive column migrations for databases created before a schema change.
+
+    Runs BEFORE executescript(SCHEMA) in init_db, so it must tolerate a
+    partially-created database: every table access is existence-guarded."""
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "owned_games" in tables:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(owned_games)").fetchall()}
+        if "ownership_class" not in cols:
+            conn.execute("ALTER TABLE owned_games ADD COLUMN ownership_class TEXT DEFAULT 'purchased'")
+        if "retire_reason" not in cols:
+            conn.execute("ALTER TABLE owned_games ADD COLUMN retire_reason TEXT")
     # game_stats predates the trophy-title join (created 2026-08-20 with NPWR
     # ids stuffed into psn_content_id and no title column — unusable). Recreate
     # with the NPWR key + normalized_title join.
-    gs = {r["name"] for r in conn.execute("PRAGMA table_info(game_stats)").fetchall()}
-    if gs and "normalized_title" not in gs:
-        conn.execute("DROP TABLE game_stats")
-        conn.execute(
-            """CREATE TABLE game_stats (
-                 trophy_title_id TEXT PRIMARY KEY,
-                 title TEXT,
-                 normalized_title TEXT,
-                 playtime_minutes INTEGER,
-                 trophies_earned INTEGER,
-                 trophies_defined INTEGER,
-                 progress REAL,
-                 last_update TEXT,
-                 updated_at TEXT DEFAULT (datetime('now'))
-               )"""
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_game_stats_norm ON game_stats(normalized_title)")
+    if "game_stats" in tables:
+        gs = {r["name"] for r in conn.execute("PRAGMA table_info(game_stats)").fetchall()}
+        if "normalized_title" not in gs:
+            conn.execute("DROP TABLE game_stats")
+            conn.execute(
+                """CREATE TABLE game_stats (
+                     trophy_title_id TEXT PRIMARY KEY,
+                     title TEXT,
+                     normalized_title TEXT,
+                     playtime_minutes INTEGER,
+                     trophies_earned INTEGER,
+                     trophies_defined INTEGER,
+                     progress REAL,
+                     last_update TEXT,
+                     updated_at TEXT DEFAULT (datetime('now'))
+                   )"""
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_game_stats_norm ON game_stats(normalized_title)")
 
 
 def _ensure_dedup_index(conn: sqlite3.Connection) -> None:
