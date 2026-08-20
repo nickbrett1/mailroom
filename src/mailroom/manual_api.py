@@ -3,14 +3,21 @@
 All writes go through mailroom (single-writer rule): the frontend never
 touches the SQLite store directly. This FastAPI service (separate process,
 same image, Tailscale-only) exposes the manual-edit endpoints the catalog UI
-uses — today: resolving ambiguous/unmatched IGDB matches and the dedup
-review queue (possible double purchases, memos/catalog-dedup-fix).
+uses — today: resolving ambiguous/unmatched IGDB matches, the dedup
+review queue (possible double purchases, memos/catalog-dedup-fix), and the
+PSN credential / web-session stores for the playtime sync.
 
 Endpoints:
   GET  /manual/needs-match           -> owned games without an igdb_id
   POST /manual/igdb-match            -> {owned_game_id, igdb_id, note?} apply a match
   GET  /manual/review-queue          -> open (or all) dedup/manual review flags
   POST /manual/review-queue/{id}/resolve -> {decision, note?} adjudicate a flag
+  POST /manual/psn-credential        -> {npsso} exchange -> store refresh token + session
+  GET  /manual/psn-credential        -> credential status
+  POST /manual/psn-cookies           -> store m.np playtime session cookies
+  GET  /manual/psn-cookies           -> cookie keys/freshness
+  POST /manual/psn-web-session       -> store web store session cookie (GraphQL playtime)
+  GET  /manual/psn-web-session       -> web session status
   GET  /health
 """
 
@@ -46,6 +53,15 @@ class PsnCookiesRequest(BaseModel):
     """m.np.playstation.com session cookies — either a {name: value} dict or
     Chrome DevTools 'Copy as JSON' (a list of {name, value, ...} objects)."""
     cookies: dict[str, str] | list[dict]
+
+
+class PsnWebSessionRequest(BaseModel):
+    """Web store session cookie for GraphQL playtime (getUserGameList).
+
+    Paste the `Cookie:` header value from a signed-in store.playstation.com
+    request to web.np.playstation.com (DevTools -> Network -> Copy as cURL).
+    """
+    session_cookie: str
 
 
 class ReviewResolveRequest(BaseModel):
@@ -189,6 +205,42 @@ def psn_cookies_status() -> dict:
             "status": (cred or {}).get("status", "missing"),
             "stored": len(keys),
             "keys": keys,
+            "updated_at": (cred or {}).get("updated_at"),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/manual/psn-web-session")
+def psn_web_session(req: PsnWebSessionRequest) -> dict:
+    """Store the web store session cookie for GraphQL playtime.
+
+    getUserGameList (web.np.playstation.com GraphQL) returns playDuration and
+    authenticates with the store `session` cookie — NOT the PS App cookies the
+    old m.np gameList needed (which the modern web store no longer serves).
+    Paste the full `Cookie:` header value (session=...; userinfo=...; ...).
+    Valid while the web session lasts.
+    """
+    cookie = req.session_cookie.strip()
+    if not cookie:
+        raise HTTPException(400, "no session cookie provided")
+    conn = _conn()
+    set_credential(conn, "psn_web_session", token=cookie,
+                   token_type="web_session_cookie", status="valid", last_error=None)
+    conn.close()
+    return {"status": "valid", "source": "psn_web_session"}
+
+
+@app.get("/manual/psn-web-session")
+def psn_web_session_status() -> dict:
+    """Read-only: web session presence + freshness (never the value)."""
+    conn = _conn()
+    try:
+        cred = get_credential(conn, "psn_web_session")
+        return {
+            "source": "psn_web_session",
+            "status": (cred or {}).get("status", "missing"),
+            "token_type": (cred or {}).get("token_type"),
             "updated_at": (cred or {}).get("updated_at"),
         }
     finally:
