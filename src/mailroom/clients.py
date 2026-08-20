@@ -375,12 +375,23 @@ class PsnApiClient:
                 bearer = self._access_token()
             except PsnAuthError:
                 bearer = None
+        _browser_headers = {
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://m.np.playstation.com",
+            "Referer": "https://m.np.playstation.com/",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
+        }
         for url in (self.GAME_LIST_URL, self.GAME_LIST_URL_V2):
             variant = url.rsplit("/", 1)[-1]
             for auth, headers in (
                 ("cookies-only", {"Cookie": cookie_hdr, "User-Agent": self.USER_AGENT}),
                 ("cookies+bearer", {"Cookie": cookie_hdr, "User-Agent": self.USER_AGENT,
                                     **({"Authorization": f"Bearer {bearer}"} if bearer else {})}),
+                ("cookies+bearer+browser", {"Cookie": cookie_hdr, "User-Agent": self.USER_AGENT, **_browser_headers,
+                                            **({"Authorization": f"Bearer {bearer}"} if bearer else {})}),
             ):
                 try:
                     resp = self._client.get(url, headers=headers, params={"limit": min(limit, 100), "offset": 0})

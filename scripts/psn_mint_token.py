@@ -140,13 +140,22 @@ def exchange_npsso(npsso: str, client: httpx.Client | None = None) -> dict:
         "Sec-Fetch-Site": "same-site",
         "Sec-Fetch-User": "?1",
     }
-    resp = c.get(
-        "https://ca.account.sony.com/api/authz/v3/oauth/authorize",
-        headers=headers,
-        params=params,
-        follow_redirects=False,
-    )
-    location = resp.headers.get("location", "")
+    # Follow the redirect chain manually and accumulate EVERY Set-Cookie: the
+    # m.np.playstation.com session cookies (_exp/_to/_t/_sk/_sid/...) are set
+    # across the authorize hops, not just on the first 302 (which only carries
+    # Akamai bot-management cookies — verified live 2026-08-20).
+    location = ""
+    url = "https://ca.account.sony.com/api/authz/v3/oauth/authorize"
+    hop_headers = headers
+    hop_params = params
+    for _ in range(10):
+        resp = c.get(url, headers=hop_headers, params=hop_params, follow_redirects=False)
+        location = resp.headers.get("location", "")
+        if not location or not location.startswith(("http://", "https://")):
+            break  # custom-scheme redirect (the PS App redirect_uri) or done
+        url = location
+        hop_headers = {"User-Agent": PsnApiClient.USER_AGENT}  # cookies persist in the client jar
+        hop_params = None
     m = re.search(r"code=([^&]+)", location)
     if not m:
         if "error_code" in location or "error" in location.lower():
@@ -155,11 +164,9 @@ def exchange_npsso(npsso: str, client: httpx.Client | None = None) -> dict:
             )
         raise RuntimeError(f"authorize returned no code in Location: HTTP {resp.status_code} -> {location[:200]}")
     tokens = exchange_code(m.group(1), client=c)
-    # The authorize response also SETS the m.np.playstation.com session
-    # cookies (_exp/_to/_t/_sk/_sid/...) — the Bearer-token scope 403s on the
-    # gameList playtime endpoint, but this cookie jar unlocks it. Capture for
-    # psn_playtime (gameLibraryService).
-    cookies = {k: v for k, v in (resp.cookies or {}).items()} if resp.cookies else {}
+    # The full cookie jar accumulated across the redirect chain — the Bearer
+    # scope 403s on the gameList playtime endpoint but the session jar may not.
+    cookies = {k: v for k, v in (c.cookies or {}).items()} if c.cookies else {}
     tokens["cookies"] = cookies or None
     return tokens
 
