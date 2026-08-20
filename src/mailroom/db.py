@@ -194,10 +194,12 @@ SELECT
     s.progress AS trophy_progress
 FROM owned_games g
 LEFT JOIN game_metadata m ON m.igdb_id = g.igdb_id
--- Trophy stats join by normalized title (the trophy API exposes only the NPWR
--- set id, which does not map to the content id; names normalize like store
--- titles). A dual-SKU title gets the same stats on both rows (shared set).
-LEFT JOIN game_stats s ON s.normalized_title = g.normalized_title
+-- Trophy stats join by normalized title with ™/®/© stripped on BOTH sides
+-- (store titles carry '™' — 'ELDEN RING™' vs the trophy set's 'ELDEN RING';
+-- the trophy API exposes only the NPWR set id, not the content id). A
+-- dual-SKU title gets the same stats on both rows (shared set).
+LEFT JOIN game_stats s ON s.normalized_title = replace(replace(replace(
+    g.normalized_title, '™', ''), '®', ''), '©', '')
 WHERE g.is_owned = 1;
 
 -- Source authentication (PSN PS-App OAuth refresh token, future API sources).
