@@ -355,10 +355,10 @@ class PsnApiClient:
         )
 
     TROPHY_URL = "https://m.np.playstation.com/api/trophy/v1/users/me/trophyTitles"
-    GAME_LIST_URLS = [
+    GAME_LIST_URLS: tuple[str, ...] = (
         "https://m.np.playstation.com/api/gameLibraryService/v3/users/me/gameList",
         "https://m.np.playstation.com/api/gameLibraryService/v2/users/me/gameList",
-    ]
+    )
 
     def game_list_probe(self, limit: int = 5) -> dict[str, Any]:
         """PROBE the PS App Game Library Service gameList endpoints (playtime
