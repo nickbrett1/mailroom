@@ -106,6 +106,45 @@ def test_review_queue_lists_and_resolves_flags(client):
     assert client.post("/manual/review-queue/9999/resolve", json={"decision": "x"}).status_code == 404
 
 
+def test_psn_cookies_store_and_status(client):
+    """Browser session cookies (dict or DevTools array JSON) store for playtime;
+    status returns keys only, never values."""
+    import json
+
+    from mailroom.db import connect
+
+    # dict form
+    res = client.post("/manual/psn-cookies", json={"cookies": {"_exp": "jwt", "_sk": "sk", "_to": "rt"}})
+    assert res.status_code == 200
+    assert res.json()["stored"] == 3
+    assert res.json()["keys"] == ["_exp", "_sk", "_to"]
+
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    cred = conn.execute("SELECT * FROM credentials WHERE source = 'psn_cookies'").fetchone()
+    assert cred["status"] == "valid"
+    assert "_sk" in cred["token"]
+    assert "jwt" in cred["token"]
+    conn.close()
+
+    # DevTools array form replaces the set
+    res = client.post("/manual/psn-cookies", json={"cookies": [
+        {"name": "_exp", "value": "new-jwt", "domain": ".playstation.com"},
+        {"name": "_sk", "value": "new-sk", "domain": ".playstation.com"},
+        {"name": "some", "value": None},  # ignored
+    ]})
+    assert res.status_code == 200
+    assert res.json()["stored"] == 2
+
+    # status shows keys, not values
+    st = client.get("/manual/psn-cookies").json()
+    assert st["status"] == "valid"
+    assert st["keys"] == ["_exp", "_sk"]
+    assert "new-jwt" not in json.dumps(st)  # values never leak
+
+    res = client.post("/manual/psn-cookies", json={"cookies": {}})
+    assert res.status_code == 400
+
+
 def test_apply_unknown_game_404(client):
     res = client.post("/manual/igdb-match", json={"owned_game_id": 9999, "igdb_id": 1})
     assert res.status_code == 404
