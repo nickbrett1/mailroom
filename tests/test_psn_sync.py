@@ -203,6 +203,11 @@ class _StubPsn:
             raise self.error
         return self.games
 
+    def played_games(self, session_cookie):
+        if self.error:
+            raise self.error
+        return self.games
+
 
 def _ctx(db_url, stub):
     return build_op_context(resources={"db_url": db_url, "psn_api": stub})
@@ -337,6 +342,26 @@ def test_game_list_cookie_auth_and_parse():
     assert psn_game_list_item_to_stats({"no": "key"}) is None
 
 
+def test_played_games_graphql_auth_and_parse():
+    """Store GraphQL getUserGameList returns played games with playDuration."""
+    from mailroom.clients import psn_game_list_item_to_stats
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/graphql/v1/op"):
+            assert request.url.params["operationName"] == "getUserGameList"
+            assert "session=abc" in request.headers.get("Cookie", "")
+            return httpx.Response(200, json={"data": {"gameLibraryTitlesRetrieve": {"games": GAME_LIST_ITEMS}}})
+        return httpx.Response(404)
+
+    client = _psn_client(handler)
+    games = client.played_games("session=abc")
+    assert len(games) == 2
+    s = psn_game_list_item_to_stats(games[0])
+    assert s["trophy_title_id"] == "NPWR11111_00"
+    assert s["playtime_minutes"] == 47 * 60 + 20
+    assert s["normalized_title"] == "god of war"
+
+
 def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")
@@ -344,7 +369,7 @@ def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
     from mailroom.db import set_credential, upsert_owned_game
 
     set_credential(conn, "psn", token="rt-123")
-    set_credential(conn, "psn_cookies", token='{"_exp": "eyJ0"}', status="valid")
+    set_credential(conn, "psn_web_session", token="session=abc", status="valid")
     upsert_owned_game(
         conn,
         {
@@ -361,13 +386,13 @@ def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
     )
     conn.close()
 
-    # trophy pass (playtime None) + gameList pass (playtime from cookies)
+    # trophy pass (playtime None) + GraphQL playtime pass (web session)
     assets.psn_playtime(_ctx(f"sqlite:///{db}", _StubPsn([], trophies=TROPHY_ITEMS, games=GAME_LIST_ITEMS)))
     conn = connect(f"sqlite:///{db}")
     row = conn.execute("SELECT * FROM game_stats ORDER BY trophy_title_id").fetchone()
     assert row["trophy_title_id"] == "NPWR11111_00"
     assert row["normalized_title"] == "god of war"
-    assert row["playtime_minutes"] == 47 * 60 + 20  # gameList playtime wins
+    assert row["playtime_minutes"] == 47 * 60 + 20  # GraphQL playtime wins
     assert row["trophies_earned"] == 37
     assert row["progress"] == 100
 
@@ -383,8 +408,8 @@ def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
     conn.close()
 
 
-def test_psn_playtime_falls_back_to_trophies_without_cookies():
-    """No psn_cookies credential -> gameList skipped, trophy stats still land."""
+def test_psn_playtime_falls_back_to_trophies_without_session():
+    """No psn_web_session credential -> playtime skipped, trophy stats still land."""
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")
     init_db(conn)
