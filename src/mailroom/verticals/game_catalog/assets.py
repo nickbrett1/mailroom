@@ -230,12 +230,14 @@ def psn_api_owned(context: AssetExecutionContext) -> None:
 
 @asset(deps=[psn_api_owned], required_resource_keys={"db_url", "psn_api"})
 def psn_playtime(context: AssetExecutionContext) -> None:
-    """Playtime + trophy stats per title from the PSN Trophy API.
+    """Playtime + trophy stats per title from PSN.
 
-    The entitlements sync carries no playtime; the trophy API is the only PSN
-    source (playDuration, ISO-8601). Same Bearer token. Upserts game_stats
-    keyed on psn_content_id; catalog_views surfaces hours_played /
-    trophy_progress. Auth failures degrade to needs_refresh like the sync.
+    The entitlements sync carries no playtime. Trophy stats come from the
+    Trophy API (same Bearer token); playtime (playDuration, ISO-8601) comes
+    from the store GraphQL getUserGameList (web session cookie). Both upsert
+    game_stats keyed on the NPWR title id; catalog_views surfaces
+    hours_played / trophy_progress. Auth failures degrade to needs_refresh
+    like the sync.
     """
     conn = connect(context.resources.db_url)
     init_db(conn)
@@ -295,29 +297,24 @@ def psn_playtime(context: AssetExecutionContext) -> None:
         )
         upserted += 1
 
-    # Playtime: the Game Library Service (gameList) needs the NPSSO session
-    # cookies (Bearer scope 403s). Same NPWR key as the trophy stats, so
-    # playtime lands on the same game_stats rows; games with playtime but no
-    # trophy set get their own rows (0 trophies).
+    # Playtime: the store GraphQL getUserGameList (web.np.playstation.com)
+    # returns playDuration per played title, authenticated by the store
+    # `session` cookie — the PS App Bearer scope 403s on the old m.np gameList
+    # endpoint. Same NPWR key as the trophy stats, so playtime lands on the
+    # same game_stats rows; games with playtime but no trophy set get their
+    # own rows (0 trophies).
     played = 0
-    cookies_raw = (get_credential(conn, "psn_cookies") or {}).get("token")
-    access = (get_credential(conn, "psn_access") or {}).get("token")
-    if cookies_raw:
+    session = (get_credential(conn, "psn_web_session") or {}).get("token")
+    if session:
         try:
-            cookies = json.loads(cookies_raw)
-            # Community playtime trick: the browser _exp cookie IS the access
-            # token — try it as the Bearer before the stored ones.
-            access = access or cookies.get("_exp")
-            context.log.info(f"psn_playtime: cookie keys={sorted(cookies.keys())} bearer_from_exp={bool(access)}")
-            games = context.resources.psn_api.game_list(cookies, access_token=access)
-            probe = getattr(context.resources.psn_api, "last_game_list_probe", {})
-            context.log.info(f"psn_playtime: gameList probe={probe}")
+            games = context.resources.psn_api.played_games(session)
+            context.log.info(f"psn_playtime: store GraphQL played n={len(games)}")
             if games:
                 first = games[0]
                 with_pd = sum(1 for g in games if g.get("playDuration") is not None)
                 context.log.info(
-                    f"psn_playtime: gameList n={len(games)} with_playDuration={with_pd} "
-                    f"keys={sorted(first.keys())} sample={str(first)[:180]}"
+                    f"psn_playtime: played keys={sorted(first.keys())} with_playDuration={with_pd} "
+                    f"sample={str(first)[:180]}"
                 )
                 for g in games:
                     s = psn_game_list_item_to_stats(g)
@@ -337,11 +334,11 @@ def psn_playtime(context: AssetExecutionContext) -> None:
                     )
                     played += 1
             else:
-                context.log.warning("psn_playtime: gameList returned nothing — see probe log (cookies/scope)")
+                context.log.warning("psn_playtime: getUserGameList returned no games (session may be stale)")
         except (PsnAuthError, httpx.HTTPError, ValueError) as exc:
-            context.log.warning(f"psn_playtime: gameList failed ({exc}) — playtime skipped")
+            context.log.warning(f"psn_playtime: store playtime failed ({exc}) — playtime skipped")
     else:
-        context.log.warning("psn_playtime: no psn_cookies credential — playtime needs an NPSSO exchange (POST /manual/psn-credential)")
+        context.log.warning("psn_playtime: no psn_web_session credential — playtime needs a store session cookie (POST /manual/psn-web-session)")
 
     conn.commit()
     conn.close()
@@ -927,4 +924,3 @@ def catalog_views(context: AssetExecutionContext) -> None:
     init_db(conn)  # creates/recreates the catalog_views view
     conn.close()
     context.log.info("catalog_views: view ensured")
-
