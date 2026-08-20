@@ -254,14 +254,23 @@ def psn_playtime(context: AssetExecutionContext) -> None:
         context.log.error(f"psn_playtime: fetch failed: {exc}")
         conn.close()
         return
-    # Log a raw sample every run so the field shape stays verified against a
+    # Log raw samples every run so the field shape stays verified against a
     # live account (playDuration presence/format, npCommunicationId).
     if raw:
+        with_pd = sum(1 for t in raw if t.get("playDuration") is not None)
         first = raw[0]
         context.log.info(
-            f"psn_playtime: raw sample keys={sorted(first.keys())} "
-            f"npCommunicationId={first.get('npCommunicationId')!r} playDuration={first.get('playDuration')!r}"
+            f"psn_playtime: trophy titles n={len(raw)} with_playDuration={with_pd} "
+            f"keys={sorted(first.keys())} first_npComm={first.get('npCommunicationId')!r}"
         )
+    # PROBE (field-shape verification): the trophy titles response may not carry
+    # playtime — try the PS App Game Library Service gameList endpoints and log
+    # their shapes so the playtime source can be pinned exactly.
+    try:
+        gl = context.resources.psn_api.game_list_probe()
+        context.log.info(f"psn_playtime: gameList probe -> {gl}")
+    except Exception as exc:  # noqa: BLE001 — probe must never fail the asset
+        context.log.info(f"psn_playtime: gameList probe failed: {exc}")
     upserted = 0
     for item in raw:
         stats = psn_trophy_item_to_stats(item)
