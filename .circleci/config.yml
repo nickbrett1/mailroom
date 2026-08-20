@@ -36,9 +36,16 @@ jobs:
   docker-publish:
     docker:
       - image: cimg/base:stable
+    environment:
+      # Registry-backed BuildKit caches: layers are pulled from GHCR on each
+      # run and pushed back with mode=max, so only changed layers rebuild.
+      MAILROOM_CACHE_REF: ghcr.io/nickbrett1/mailroom:buildcache
+      CATALOG_MCP_CACHE_REF: ghcr.io/nickbrett1/catalog-mcp:buildcache
+      DAGSTER_MCP_CACHE_REF: ghcr.io/nickbrett1/dagster-mcp:buildcache
     steps:
       - checkout
-      - setup_remote_docker
+      - setup_remote_docker:
+          docker_layer_caching: true
       - run:
           name: Login to Container Registry
           command: |
@@ -46,20 +53,26 @@ jobs:
       - run:
           name: Build and Push Multi-Arch Image (mailroom)
           command: |
-            docker buildx create --use || true
+            docker buildx create --use --bootstrap || true
             docker buildx build --platform linux/amd64,linux/arm64 \
+              --cache-from type=registry,ref=$MAILROOM_CACHE_REF \
+              --cache-to type=registry,ref=$MAILROOM_CACHE_REF,mode=max \
               -t ghcr.io/nickbrett1/mailroom:$CIRCLE_SHA1 -t ghcr.io/nickbrett1/mailroom:latest --push .
       - run:
           name: Build and Push Multi-Arch Image (catalog-mcp)
           command: |
-            docker buildx create --use || true
+            docker buildx create --use --bootstrap || true
             docker buildx build --platform linux/amd64,linux/arm64 \
+              --cache-from type=registry,ref=$CATALOG_MCP_CACHE_REF \
+              --cache-to type=registry,ref=$CATALOG_MCP_CACHE_REF,mode=max \
               -t ghcr.io/nickbrett1/catalog-mcp:$CIRCLE_SHA1 -t ghcr.io/nickbrett1/catalog-mcp:latest --push catalog_mcp
       - run:
           name: Build and Push Multi-Arch Image (dagster-mcp)
           command: |
-            docker buildx create --use || true
+            docker buildx create --use --bootstrap || true
             docker buildx build --platform linux/amd64,linux/arm64 \
+              --cache-from type=registry,ref=$DAGSTER_MCP_CACHE_REF \
+              --cache-to type=registry,ref=$DAGSTER_MCP_CACHE_REF,mode=max \
               -t ghcr.io/nickbrett1/dagster-mcp:$CIRCLE_SHA1 -t ghcr.io/nickbrett1/dagster-mcp:latest --push dagster-mcp
 workflows:
   build-and-test:
@@ -75,4 +88,3 @@ workflows:
           filters:
             branches:
               only: main
-

@@ -8,11 +8,19 @@
 
 FROM python:3.12-slim AS build
 WORKDIR /app
-COPY requirements.txt* pyproject.toml* ./
+# Install dependencies *before* copying the source tree so this expensive
+# layer (dagster + friends) is reused by Docker layer caching / the buildx
+# registry cache unless pyproject.toml or requirements.txt change. A minimal
+# placeholder package satisfies the build so `pip install .` resolves deps.
+COPY README.md pyproject.toml requirements.txt* ./
 RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --upgrade pip
+    && /opt/venv/bin/pip install --upgrade pip \
+    && mkdir -p src/mailroom && touch src/mailroom/__init__.py \
+    && /opt/venv/bin/pip install --no-cache-dir .
+# Now copy the real source and reinstall the package itself. Deps are already
+# in the venv, so this layer is cheap (rebuilds on every source change only).
 COPY . .
-RUN if [ -f requirements.txt ]; then /opt/venv/bin/pip install --no-cache-dir -r requirements.txt; else /opt/venv/bin/pip install --no-cache-dir .; fi
+RUN /opt/venv/bin/pip install --no-cache-dir --no-deps .
 
 FROM python:3.12-slim
 WORKDIR /app
