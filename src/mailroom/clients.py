@@ -443,6 +443,13 @@ class PsnApiClient:
             "Referer": self.STORE_REFERER,
             "apollographql-client-name": "@sie-ppr-web-store/app",
             "apollographql-client-version": "0.113.0",
+            # Apollo Client's CSRF preflight headers. Without these the op
+            # endpoint 400s with CSRF_ERROR ("This operation has been blocked
+            # as a potential Cross-Site Request Forgery (CSRF)..."), which the
+            # store app always sends on its persisted-query GETs. Verified live
+            # 2026-08-20: 400 CSRF_ERROR without them, passes them with them.
+            "x-apollo-operation-name": "getUserGameList",
+            "apollo-require-preflight": "true",
             "x-psn-app-ver": "@sie-ppr-web-store/app/0.113.0-",
             "User-Agent": self.USER_AGENT,
         }
@@ -451,6 +458,13 @@ class PsnApiClient:
             raise PsnAuthError(f"PSN store session rejected (HTTP {resp.status_code})")
         resp.raise_for_status()
         data = resp.json() or {}
+        errors = data.get("errors") or []
+        if errors and not ((data.get("data") or {}).get("gameLibraryTitlesRetrieve") or {}).get("games"):
+            # e.g. arkham-gql "Access denied! You need to be authorized to
+            # perform this action!" — surfaces a stale/unauthorized session
+            # instead of silently returning an empty list.
+            msg = errors[0].get("message", "unknown error") if isinstance(errors[0], dict) else str(errors[0])
+            raise PsnAuthError(f"PSN store session rejected: {msg}")
         games = ((data.get("data") or {}).get("gameLibraryTitlesRetrieve") or {}).get("games") or []
         return games
 

@@ -350,6 +350,10 @@ def test_played_games_graphql_auth_and_parse():
         if request.url.path.endswith("/api/graphql/v1/op"):
             assert request.url.params["operationName"] == "getUserGameList"
             assert "session=abc" in request.headers.get("Cookie", "")
+            # Apollo CSRF-preflight headers are required (verified live 2026-08-20:
+            # without them the op endpoint 400s with CSRF_ERROR).
+            assert request.headers.get("x-apollo-operation-name") == "getUserGameList"
+            assert request.headers.get("apollo-require-preflight") == "true"
             return httpx.Response(200, json={"data": {"gameLibraryTitlesRetrieve": {"games": GAME_LIST_ITEMS}}})
         return httpx.Response(404)
 
@@ -360,6 +364,22 @@ def test_played_games_graphql_auth_and_parse():
     assert s["trophy_title_id"] == "NPWR11111_00"
     assert s["playtime_minutes"] == 47 * 60 + 20
     assert s["normalized_title"] == "god of war"
+
+
+def test_played_games_raises_on_store_access_denied():
+    """arkham-gql 'Access denied' (stale/unauthorized session) surfaces as
+    PsnAuthError instead of silently returning an empty list."""
+    from mailroom.clients import PsnAuthError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "data": {"gameLibraryTitlesRetrieve": None},
+            "errors": [{"message": "Access denied! You need to be authorized to perform this action!"}],
+        })
+
+    client = _psn_client(handler)
+    with pytest.raises(PsnAuthError, match="Access denied"):
+        client.played_games("session=abc")
 
 
 def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
