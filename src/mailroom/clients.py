@@ -355,6 +355,32 @@ class PsnApiClient:
         )
 
     TROPHY_URL = "https://m.np.playstation.com/api/trophy/v1/users/me/trophyTitles"
+    GAME_LIST_URLS = [
+        "https://m.np.playstation.com/api/gameLibraryService/v3/users/me/gameList",
+        "https://m.np.playstation.com/api/gameLibraryService/v2/users/me/gameList",
+    ]
+
+    def game_list_probe(self, limit: int = 5) -> dict[str, Any]:
+        """PROBE the PS App Game Library Service gameList endpoints (playtime
+        candidates) and return their status/shape/sample — field verification
+        only, no writes."""
+        token = self._access_token()
+        out: dict[str, Any] = {}
+        for url in self.GAME_LIST_URLS:
+            try:
+                resp = self._client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"limit": min(limit, 100), "offset": 0, "fields": "@default,playDuration,playCount,lastPlayedDateTime"},
+                )
+                out[url.rsplit("/", 2)[-2] + "/" + url.rsplit("/", 1)[-1]] = {
+                    "status": resp.status_code,
+                    "keys": sorted((resp.json().get("games") or [{}])[0].keys()) if resp.status_code == 200 and resp.json().get("games") else None,
+                    "sample": ((resp.json().get("games") or [])[:1] if resp.status_code == 200 else resp.text[:120]),
+                }
+            except Exception as exc:  # noqa: BLE001
+                out[url] = {"error": str(exc)[:200]}
+        return out
 
     def trophy_titles(self, limit: int = 800) -> list[dict[str, Any]]:
         """Per-title trophy + PLAYTIME pull from the Trophy API (paginated).
