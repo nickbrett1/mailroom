@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import time
@@ -358,6 +359,15 @@ class PsnApiClient:
     GAME_LIST_URL = "https://m.np.playstation.com/api/gameLibraryService/v3/users/me/gameList"
     GAME_LIST_URL_V2 = "https://m.np.playstation.com/api/gameLibraryService/v2/users/me/gameList"
 
+    # Store GraphQL playtime (web.np.playstation.com) — the modern web store's
+    # persisted getUserGameList query returns playDuration per played title,
+    # authenticated by the store `session` cookie (NOT the PS App Bearer, which
+    # 403s on the m.np gameList endpoints above). Hash sourced from
+    # community-maintained PSN libs (psn-api / Playnite PSN plugins / gameshelf).
+    GRAPHQL_URL = "https://web.np.playstation.com/api/graphql/v1/op"
+    GET_USER_GAME_LIST_HASH = "e780a6d8b921ef0c59ec01ea5c5255671272ca0d819edb61320914cf7a78b3ae"
+    STORE_REFERER = "https://store.playstation.com/"
+
     def game_list(self, cookies: dict[str, str], limit: int = 500, access_token: str | None = None) -> list[dict[str, Any]]:
         """Playtime pull from the PS App Game Library Service.
 
@@ -366,6 +376,9 @@ class PsnApiClient:
         Bearer, using the freshest access token available. Every attempt's
         status is recorded in `self.last_game_list_probe` for diagnostics.
         Item fields expected: titleId (NPWR), name, playDuration (ISO-8601).
+
+        NOTE: superseded by `played_games` (store GraphQL getUserGameList) —
+        the PS-App cookies this needs are only obtainable from the mobile app.
         """
         self.last_game_list_probe: dict[str, Any] = {}
         cookie_hdr = "; ".join(f"{k}={v}" for k, v in cookies.items())
@@ -405,6 +418,41 @@ class PsnApiClient:
                 except Exception as exc:  # noqa: BLE001 — diagnostics
                     self.last_game_list_probe[f"{variant}/{auth}"] = {"error": str(exc)[:100]}
         return []
+
+    def played_games(self, session_cookie: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Playtime via the store GraphQL getUserGameList persisted query.
+
+        The modern web store exposes played games — each with `playDuration`
+        (ISO-8601, e.g. 'PT47H20M') and `lastPlayedDateTime` — through
+        web.np.playstation.com/api/graphql/v1/op, authenticated by the store
+        `session` cookie (NOT the PS App OAuth Bearer, which 403s on the old
+        m.np gameLibraryService gameList). Verified via community libs
+        (psn-api / Playnite PSN plugins / gameshelf).
+
+        Returns the `games` list; each item has titleId (NPWR), name,
+        playDuration, lastPlayedDateTime, platform, productId.
+        """
+        params = {
+            "operationName": "getUserGameList",
+            "variables": json.dumps({"limit": limit, "categories": "ps4_game,ps5_native_game"}),
+            "extensions": json.dumps({"persistedQuery": {"version": 1, "sha256Hash": self.GET_USER_GAME_LIST_HASH}}),
+        }
+        headers = {
+            "Cookie": session_cookie,
+            "Origin": "https://store.playstation.com",
+            "Referer": self.STORE_REFERER,
+            "apollographql-client-name": "@sie-ppr-web-store/app",
+            "apollographql-client-version": "0.113.0",
+            "x-psn-app-ver": "@sie-ppr-web-store/app/0.113.0-",
+            "User-Agent": self.USER_AGENT,
+        }
+        resp = self._client.get(self.GRAPHQL_URL, headers=headers, params=params)
+        if resp.status_code in (400, 401):
+            raise PsnAuthError(f"PSN store session rejected (HTTP {resp.status_code})")
+        resp.raise_for_status()
+        data = resp.json() or {}
+        games = ((data.get("data") or {}).get("gameLibraryTitlesRetrieve") or {}).get("games") or []
+        return games
 
     def trophy_titles(self, limit: int = 800) -> list[dict[str, Any]]:
         """Per-title trophy pull from the Trophy API (paginated).
