@@ -367,7 +367,9 @@ class PsnApiClient:
     GRAPHQL_URL = "https://web.np.playstation.com/api/graphql/v1/op"
     GET_USER_GAME_LIST_HASH = "e780a6d8b921ef0c59ec01ea5c5255671272ca0d819edb61320914cf7a78b3ae"
     # Captured live 2026-08-20 from library.playstation.com (my-playstation app):
-    # the game-library persisted query that the web store actually issues.
+    # the game-library persisted query the web store actually issues. NOTE: this
+    # returns the entitlement/library list (CUSA/PPSA content ids) and does NOT
+    # include any playtime field — it is NOT the playtime source.
     GET_PURCHASED_GAME_LIST_HASH = "827a423f6a8ddca4107ac01395af2ec0eafd8396fc7fa204aaf9b7ed2eefa168"
     STORE_REFERER = "https://store.playstation.com/"
     LIBRARY_REFERER = "https://library.playstation.com/"
@@ -437,22 +439,15 @@ class PsnApiClient:
         playDuration, lastPlayedDateTime, platform, productId.
         """
         params = {
-            "operationName": "getPurchasedGameList",
-            "variables": json.dumps({
-                "isActive": True,
-                "platform": ["ps4", "ps5"],
-                "size": limit,
-                "start": 0,
-                "sortBy": "ACTIVE_DATE",
-                "sortDirection": "desc",
-            }),
-            "extensions": json.dumps({"persistedQuery": {"version": 1, "sha256Hash": self.GET_PURCHASED_GAME_LIST_HASH}}),
+            "operationName": "getUserGameList",
+            "variables": json.dumps({"limit": limit, "categories": "ps4_game,ps5_native_game"}),
+            "extensions": json.dumps({"persistedQuery": {"version": 1, "sha256Hash": self.GET_USER_GAME_LIST_HASH}}),
         }
         headers = {
             "Cookie": session_cookie,
             "accept": "application/json",
             # The op endpoint 400s with CSRF_ERROR on a form-encoded request; the
-            # library app sends `content-type: application/json`, which satisfies
+            # store app sends `content-type: application/json`, which satisfies
             # the CSRF check (verified live 2026-08-20).
             "content-type": "application/json",
             "apollographql-client-name": "my-playstation",
@@ -468,14 +463,14 @@ class PsnApiClient:
         resp.raise_for_status()
         data = resp.json() or {}
         errors = data.get("errors") or []
-        if errors and not (data.get("data") or {}).get("purchasedTitlesRetrieve"):
+        if errors and not (data.get("data") or {}).get("gameLibraryTitlesRetrieve"):
             # e.g. arkham-gql "Access denied! You need to be authorized to
             # perform this action!" — surfaces a stale/unauthorized session
             # instead of silently returning an empty list.
             msg = errors[0].get("message", "unknown error") if isinstance(errors[0], dict) else str(errors[0])
             raise PsnAuthError(f"PSN store session rejected: {msg}")
-        titles = (data.get("data") or {}).get("purchasedTitlesRetrieve") or {}
-        games = titles.get("titles") or titles.get("games") or titles.get("items") or []
+        titles = (data.get("data") or {}).get("gameLibraryTitlesRetrieve") or {}
+        games = titles.get("games") or titles.get("titles") or titles.get("items") or []
         return games
 
     def trophy_titles(self, limit: int = 800) -> list[dict[str, Any]]:

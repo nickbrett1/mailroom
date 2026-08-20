@@ -348,13 +348,12 @@ def test_played_games_graphql_auth_and_parse():
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/api/graphql/v1/op"):
-            assert request.url.params["operationName"] == "getPurchasedGameList"
+            assert request.url.params["operationName"] == "getUserGameList"
             assert "session=abc" in request.headers.get("Cookie", "")
             # The op endpoint 400s with CSRF_ERROR on form-encoded requests; the
-            # library app sends content-type: application/json (verified live 2026-08-20).
+            # store app sends content-type: application/json (verified live 2026-08-20).
             assert request.headers.get("content-type") == "application/json"
-            assert request.headers.get("apollographql-client-name") == "my-playstation"
-            return httpx.Response(200, json={"data": {"purchasedTitlesRetrieve": {"titles": GAME_LIST_ITEMS}}})
+            return httpx.Response(200, json={"data": {"gameLibraryTitlesRetrieve": {"games": GAME_LIST_ITEMS}}})
         return httpx.Response(404)
 
     client = _psn_client(handler)
@@ -373,7 +372,7 @@ def test_played_games_raises_on_store_access_denied():
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={
-            "data": {"purchasedTitlesRetrieve": None},
+            "data": {"gameLibraryTitlesRetrieve": None},
             "errors": [{"message": "Access denied! You need to be authorized to perform this action!"}],
         })
 
