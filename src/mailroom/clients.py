@@ -558,15 +558,30 @@ def iso8601_duration_minutes(duration: str | None) -> int | None:
     return hours * 60 + minutes + (1 if seconds else 0)
 
 
+def _trophy_total(counts: Any) -> int:
+    """Trophy count from the API's earned/defined object.
+
+    Shape is {bronze, silver, gold, platinum} (no 'total' key on the live
+    trophy API); tolerate a {total: N} variant too.
+    """
+    if not counts:
+        return 0
+    if isinstance(counts, dict):
+        if counts.get("total") is not None:
+            return int(counts["total"] or 0)
+        return sum(int(v or 0) for k, v in counts.items() if k in ("bronze", "silver", "gold", "platinum"))
+    return int(counts or 0)
+
+
 def psn_trophy_item_to_stats(item: dict[str, Any]) -> dict[str, Any] | None:
     """Normalize a trophy-title entry into a game_stats row.
 
     Keyed on npCommunicationId (the NPWR trophy-set id — the ONLY stable key
     the trophy API exposes; the content id is NOT in the response). Joined to
-    owned_games by normalized_title (trophy names normalize like store
-    titles). playDuration is ISO-8601 ('PT24H15M') -> minutes; the trophy API
-    does not return it today, so playtime_minutes stays None until a
-    playtime-capable auth path exists.
+    owned_games by normalized_title with ™/®/© stripped (store titles carry
+    '™' — 'ELDEN RING™' vs the trophy set's 'ELDEN RING'). playDuration is
+    ISO-8601 ('PT24H15M') -> minutes; the trophy API does not return it today,
+    so playtime_minutes stays None until a playtime-capable auth path exists.
     """
     from mailroom.verticals.game_catalog.parsers.psn import normalize_title
 
@@ -574,15 +589,13 @@ def psn_trophy_item_to_stats(item: dict[str, Any]) -> dict[str, Any] | None:
     name = item.get("trophyTitleName")
     if not npid or not name:
         return None
-    defined = item.get("definedTrophies") or {}
-    earned = item.get("earnedTrophies") or {}
     return {
         "trophy_title_id": npid,
         "title": name,
-        "normalized_title": normalize_title(name),
+        "normalized_title": normalize_title(name).replace("™", "").replace("®", "").replace("©", ""),
         "playtime_minutes": iso8601_duration_minutes(item.get("playDuration")),
-        "trophies_earned": earned.get("total") or 0,
-        "trophies_defined": defined.get("total") or 0,
+        "trophies_earned": _trophy_total(item.get("earnedTrophies")),
+        "trophies_defined": _trophy_total(item.get("definedTrophies")),
         "progress": item.get("progress"),
         "last_update": item.get("lastUpdateDate"),
     }

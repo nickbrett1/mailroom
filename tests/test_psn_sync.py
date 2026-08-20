@@ -279,6 +279,14 @@ def test_trophy_item_normalization():
     assert s["trophies_defined"] == 37
     assert s["progress"] == 100
     assert psn_trophy_item_to_stats({"no": "id"}) is None
+    # medal-only shape (no 'total' key) — the live trophy API shape
+    medal = {"earnedTrophies": {"bronze": 3, "silver": 1, "gold": 0, "platinum": 0},
+             "definedTrophies": {"bronze": 10, "silver": 5, "gold": 3, "platinum": 1},
+             "npCommunicationId": "NPWR1_00", "trophyTitleName": "Test™"}
+    s2 = psn_trophy_item_to_stats(medal)
+    assert s2["trophies_earned"] == 4
+    assert s2["trophies_defined"] == 19
+    assert s2["normalized_title"] == "test"  # ™ stripped
 
 
 def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
