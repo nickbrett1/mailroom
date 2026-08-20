@@ -228,8 +228,17 @@ def psn_credential(req: PsnCredentialRequest) -> dict:
         raise HTTPException(400, "exchange succeeded but no refresh token returned")
     conn = _conn()
     set_credential(conn, "psn", token=refresh, token_type="refresh_token", status="valid", last_error=None)
+    # Session cookies for the m.np.playstation.com playtime endpoint (gameList
+    # 403s with the Bearer scope; the NPSSO authorize response sets the jar).
+    cookies = tokens.get("cookies")
+    if cookies:
+        set_credential(
+            conn, "psn_cookies",
+            token=json.dumps(cookies), token_type="session_cookies",
+            status="valid", last_error=None,
+        )
     conn.close()
-    return {"status": "valid", "refresh_token_prefix": refresh[:12]}
+    return {"status": "valid", "refresh_token_prefix": refresh[:12], "cookies_stored": bool(cookies)}
 
 
 @app.get("/manual/psn-credential")
