@@ -355,42 +355,18 @@ class PsnApiClient:
         )
 
     TROPHY_URL = "https://m.np.playstation.com/api/trophy/v1/users/me/trophyTitles"
-    GAME_LIST_URLS: tuple[str, ...] = (
-        "https://m.np.playstation.com/api/gameLibraryService/v3/users/me/gameList",
-        "https://m.np.playstation.com/api/gameLibraryService/v2/users/me/gameList",
-    )
-
-    def game_list_probe(self, limit: int = 5) -> dict[str, Any]:
-        """PROBE the PS App Game Library Service gameList endpoints (playtime
-        candidates) and return their status/shape/sample — field verification
-        only, no writes."""
-        token = self._access_token()
-        out: dict[str, Any] = {}
-        for url in self.GAME_LIST_URLS:
-            try:
-                resp = self._client.get(
-                    url,
-                    headers={"Authorization": f"Bearer {token}"},
-                    params={"limit": min(limit, 100), "offset": 0, "fields": "@default,playDuration,playCount,lastPlayedDateTime"},
-                )
-                out[url.rsplit("/", 2)[-2] + "/" + url.rsplit("/", 1)[-1]] = {
-                    "status": resp.status_code,
-                    "keys": sorted((resp.json().get("games") or [{}])[0].keys()) if resp.status_code == 200 and resp.json().get("games") else None,
-                    "sample": ((resp.json().get("games") or [])[:1] if resp.status_code == 200 else resp.text[:120]),
-                }
-            except Exception as exc:  # noqa: BLE001
-                out[url] = {"error": str(exc)[:200]}
-        return out
 
     def trophy_titles(self, limit: int = 800) -> list[dict[str, Any]]:
-        """Per-title trophy + PLAYTIME pull from the Trophy API (paginated).
+        """Per-title trophy pull from the Trophy API (paginated).
 
-        The entitlements endpoint carries no playtime; the trophy API does —
-        each title has `playDuration` (ISO-8601, e.g. 'PT24H15M') plus
-        earnedTrophies/definedTrophies/progress. Same Bearer token as the
-        library pull; npCommunicationId == owned_games.psn_content_id.
+        Same Bearer token as the library pull. NOTE (verified live 2026-08-20):
+        the trophy titles response carries NO playtime — `playDuration` is
+        absent even when requested, and the PS App gameList endpoints that DO
+        hold playtime return 403 with the PS App OAuth scope. What we get:
+        earnedTrophies/definedTrophies/progress + trophyTitleName, keyed on
+        npCommunicationId (the NPWR trophy-set id — NOT the content id).
         Response: {totalResults, trophyTitles: [{npCommunicationId,
-        trophyTitleName, trophyTitlePlatform, playDuration, earnedTrophies,
+        trophyTitleName, trophyTitlePlatform, earnedTrophies,
         definedTrophies, progress, lastUpdateDate, ...}]}.
         """
         token = self._access_token()
@@ -406,7 +382,7 @@ class PsnApiClient:
                     "fields": (
                         "npCommunicationId,trophyTitleName,trophyTitleDetail,trophyTitleIconUrl,"
                         "trophyTitlePlatform,hasTrophyGroups,definedTrophies,earnedTrophies,"
-                        "progress,hiddenFlag,lastUpdateDate,playDuration"
+                        "progress,hiddenFlag,lastUpdateDate"
                     ),
                     "sortBy": "titleName",
                 },
@@ -585,16 +561,25 @@ def iso8601_duration_minutes(duration: str | None) -> int | None:
 def psn_trophy_item_to_stats(item: dict[str, Any]) -> dict[str, Any] | None:
     """Normalize a trophy-title entry into a game_stats row.
 
-    Keyed on npCommunicationId (== psn_content_id). playDuration is ISO-8601
-    ('PT24H15M') — converted to minutes; absent when PSN has no playtime.
+    Keyed on npCommunicationId (the NPWR trophy-set id — the ONLY stable key
+    the trophy API exposes; the content id is NOT in the response). Joined to
+    owned_games by normalized_title (trophy names normalize like store
+    titles). playDuration is ISO-8601 ('PT24H15M') -> minutes; the trophy API
+    does not return it today, so playtime_minutes stays None until a
+    playtime-capable auth path exists.
     """
-    cid = item.get("npCommunicationId")
-    if not cid:
+    from mailroom.verticals.game_catalog.parsers.psn import normalize_title
+
+    npid = item.get("npCommunicationId")
+    name = item.get("trophyTitleName")
+    if not npid or not name:
         return None
     defined = item.get("definedTrophies") or {}
     earned = item.get("earnedTrophies") or {}
     return {
-        "psn_content_id": cid,
+        "trophy_title_id": npid,
+        "title": name,
+        "normalized_title": normalize_title(name),
         "playtime_minutes": iso8601_duration_minutes(item.get("playDuration")),
         "trophies_earned": earned.get("total") or 0,
         "trophies_defined": defined.get("total") or 0,
