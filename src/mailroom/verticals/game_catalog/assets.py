@@ -305,7 +305,10 @@ def psn_playtime(context: AssetExecutionContext) -> None:
     if cookies_raw:
         try:
             cookies = json.loads(cookies_raw)
-            context.log.info(f"psn_playtime: cookie keys={sorted(cookies.keys())} has_access={bool(access)}")
+            # Community playtime trick: the browser _exp cookie IS the access
+            # token — try it as the Bearer before the stored ones.
+            access = access or cookies.get("_exp")
+            context.log.info(f"psn_playtime: cookie keys={sorted(cookies.keys())} bearer_from_exp={bool(access)}")
             games = context.resources.psn_api.game_list(cookies, access_token=access)
             probe = getattr(context.resources.psn_api, "last_game_list_probe", {})
             context.log.info(f"psn_playtime: gameList probe={probe}")

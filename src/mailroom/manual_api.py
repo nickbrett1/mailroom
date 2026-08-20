@@ -42,6 +42,12 @@ class PsnCredentialRequest(BaseModel):
     npsso: str
 
 
+class PsnCookiesRequest(BaseModel):
+    """m.np.playstation.com session cookies — either a {name: value} dict or
+    Chrome DevTools 'Copy as JSON' (a list of {name, value, ...} objects)."""
+    cookies: dict[str, str] | list[dict]
+
+
 class ReviewResolveRequest(BaseModel):
     decision: str  # e.g. 'double_purchase' | 'same_purchase' | 'not_a_duplicate'
     note: str | None = None
@@ -132,6 +138,59 @@ def resolve_review_flag(flag_id: int, req: ReviewResolveRequest) -> dict:
         )
         conn.commit()
         return {"id": flag_id, "status": "resolved", "decision": req.decision, "payload": payload}
+    finally:
+        conn.close()
+
+
+def _normalize_cookies(raw: dict[str, str] | list[dict]) -> dict[str, str]:
+    """Accept {name: value} or Chrome DevTools cookie-array JSON."""
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items() if k and v is not None}
+    out: dict[str, str] = {}
+    for item in raw or []:
+        if isinstance(item, dict) and item.get("name") and item.get("value") is not None:
+            out[str(item["name"])] = str(item["value"])
+    return out
+
+
+@app.post("/manual/psn-cookies")
+def psn_cookies(req: PsnCookiesRequest) -> dict:
+    """Store the m.np.playstation.com session cookies for playtime.
+
+    gameList (gameLibraryService) is behind Akamai bot protection that
+    rejects script-minted sessions (verified live 2026-08-20) — only cookies
+    copied from a REAL browser session on m.np.playstation.com carry the
+    validated _sk/_abck fingerprint. Paste them (DevTools -> Application ->
+    Cookies -> https://m.np.playstation.com -> Copy as JSON). Valid months.
+    """
+    cookies = _normalize_cookies(req.cookies)
+    if not cookies:
+        raise HTTPException(400, "no usable cookies (need name/value pairs)")
+    conn = _conn()
+    set_credential(conn, "psn_cookies", token=json.dumps(cookies),
+                   token_type="session_cookies", status="valid", last_error=None)
+    conn.close()
+    return {"status": "valid", "stored": len(cookies), "keys": sorted(cookies.keys())}
+
+
+@app.get("/manual/psn-cookies")
+def psn_cookies_status() -> dict:
+    """Read-only: cookie keys + freshness (never the values)."""
+    conn = _conn()
+    try:
+        cred = get_credential(conn, "psn_cookies")
+        keys: list[str] = []
+        if cred and cred.get("token"):
+            try:
+                keys = sorted(json.loads(cred["token"]).keys())
+            except (ValueError, TypeError):
+                pass
+        return {
+            "status": (cred or {}).get("status", "missing"),
+            "stored": len(keys),
+            "keys": keys,
+            "updated_at": (cred or {}).get("updated_at"),
+        }
     finally:
         conn.close()
 
