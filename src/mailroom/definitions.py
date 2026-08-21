@@ -42,6 +42,7 @@ from mailroom.verticals.game_catalog.assets import (
     psn_playtime,
     raw_psn_receipts,
     raw_retailer_receipts,
+    record_known_order_items,
 )
 
 # Catalog daily — email receipts -> owned_games -> incremental IGDB enrichment.
@@ -119,6 +120,7 @@ definitions = Definitions(
         parsed_purchases_digital,
         raw_retailer_receipts,
         backfill_missing_receipts,
+        record_known_order_items,
         parsed_purchases_physical,
         classified_game_items,
         owned_games,

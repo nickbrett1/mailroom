@@ -55,6 +55,24 @@ CREATE TABLE IF NOT EXISTS parsed_purchases (
     UNIQUE(source, order_number, item_key)
 );
 
+-- Manually recorded line items for receipts that don't disclose their
+-- contents (e.g. Amazon's anonymized "Order Total" confirmations, where the
+-- item titles are never in the email). Durable record; the
+-- record_known_order_items asset feeds them into parsed_purchases so they
+-- flow to classified_game_items -> owned_games like a parsed receipt.
+CREATE TABLE IF NOT EXISTS known_order_items (
+    id INTEGER PRIMARY KEY,
+    source TEXT NOT NULL,
+    order_number TEXT NOT NULL,
+    title TEXT NOT NULL,
+    platform TEXT,
+    price TEXT,
+    acquisition_date TEXT,
+    note TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(source, order_number, title)
+);
+
 -- Raw line items retained even when excluded from the catalog (platform gate).
 CREATE TABLE IF NOT EXISTS order_items (
     id INTEGER PRIMARY KEY,

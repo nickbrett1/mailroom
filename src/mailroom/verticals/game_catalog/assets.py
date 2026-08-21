@@ -451,6 +451,75 @@ def backfill_missing_receipts(context: AssetExecutionContext) -> None:
     context.log.info(f"backfill_missing_receipts: {done}/{len(ids)} receipts backfilled")
 
 
+@asset(
+    required_resource_keys={"db_url"},
+    config_schema={
+        "items": Field(
+            list,
+            is_required=True,
+            description=(
+                "Manually recorded order line items, each a dict with keys: source, "
+                "order_number, title, platform, price, acquisition_date, note. Used to "
+                "catalogue games whose receipt never disclosed them (e.g. Amazon's "
+                "anonymized 'Order Total' confirmations)."
+            ),
+        )
+    },
+)
+def record_known_order_items(context: AssetExecutionContext) -> None:
+    """Record owned games that never appeared in a receipt.
+
+    Some old receipts (e.g. Amazon's anonymized 'Order Total' confirmations)
+    carry the order total but no line items, so the parser can't see the
+    games. When the owner knows what a given order contained, this records
+    each title so it flows through parsed_purchases -> classified_game_items ->
+    owned_games exactly like a parsed receipt. Durable audit row in
+    known_order_items + idempotent insert into parsed_purchases.
+
+    Materialize with config:
+      {"items": [
+        {"source": "amazon", "order_number": "111-0336555-9833027",
+         "title": "Hades - PlayStation 4", "platform": "playstation 4",
+         "price": "$24.99", "acquisition_date": "2021-11-21T04:08:56Z", "note": "..."},
+        ...
+      ]}
+    """
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    items = context.op_config["items"]
+    recorded = 0
+    for item in items:
+        source = str(item.get("source") or "").strip()
+        order = str(item.get("order_number") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not (source and order and title):
+            context.log.warning(f"record_known_order_items: skipping incomplete item {item!r}")
+            continue
+        platform = item.get("platform")
+        price = item.get("price")
+        acq = item.get("acquisition_date")
+        note = item.get("note")
+        conn.execute(
+            """INSERT INTO known_order_items(source, order_number, title, platform, price, acquisition_date, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source, order_number, title) DO UPDATE SET
+                 platform = COALESCE(?, platform),
+                 price = COALESCE(?, price),
+                 acquisition_date = COALESCE(?, acquisition_date)""",
+            (source, order, title, platform, price, acq, note, platform, price, acq),
+        )
+        conn.execute(
+            """INSERT INTO parsed_purchases(source, order_number, item_key, purchased_at, title, platform, price)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source, order_number, item_key) DO NOTHING""",
+            (source, order, f"{order}:{title}", acq, title, platform, price),
+        )
+        recorded += 1
+    conn.commit()
+    conn.close()
+    context.log.info(f"record_known_order_items: {recorded}/{len(items)} known items recorded")
+
+
 @asset(deps=[raw_retailer_receipts], required_resource_keys={"db_url"})
 def parsed_purchases_physical(context: AssetExecutionContext) -> None:
     """Parse stored retailer receipts into normalized purchases (one row per
