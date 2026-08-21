@@ -69,6 +69,20 @@ class ReviewResolveRequest(BaseModel):
     note: str | None = None
 
 
+class KnownOrderItemRequest(BaseModel):
+    """A game that never appeared in a receipt (anonymized Amazon confirmations).
+
+    Recorded durably in known_order_items and fed into parsed_purchases so it
+    flows to owned_games with the order's acquisition date."""
+    source: str
+    order_number: str
+    title: str
+    platform: str | None = None
+    price: str | None = None
+    acquisition_date: str | None = None
+    note: str | None = None
+
+
 def _conn():
     conn = connect(_db_url())
     init_db(conn)
@@ -154,6 +168,54 @@ def resolve_review_flag(flag_id: int, req: ReviewResolveRequest) -> dict:
         )
         conn.commit()
         return {"id": flag_id, "status": "resolved", "decision": req.decision, "payload": payload}
+    finally:
+        conn.close()
+
+
+@app.post("/manual/known-order-item")
+def known_order_item(req: KnownOrderItemRequest) -> dict:
+    """Record a game that never appeared in its receipt (anonymized Amazon
+    order confirmations carry the total but no line items). Stores a durable
+    row in known_order_items and feeds it into parsed_purchases so the game
+    flows to owned_games with the order's acquisition date. Idempotent on
+    (source, order_number, title)."""
+    if not (req.source.strip() and req.order_number.strip() and req.title.strip()):
+        raise HTTPException(400, "source, order_number and title are required")
+    conn = _conn()
+    try:
+        conn.execute(
+            """INSERT INTO known_order_items(source, order_number, title, platform, price, acquisition_date, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source, order_number, title) DO UPDATE SET
+                 platform = COALESCE(?, platform),
+                 price = COALESCE(?, price),
+                 acquisition_date = COALESCE(?, acquisition_date)""",
+            (req.source, req.order_number, req.title, req.platform, req.price,
+             req.acquisition_date, req.note, req.platform, req.price, req.acquisition_date),
+        )
+        conn.execute(
+            """INSERT INTO parsed_purchases(source, order_number, item_key, purchased_at, title, platform, price)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source, order_number, item_key) DO NOTHING""",
+            (req.source, req.order_number, f"{req.order_number}:{req.title}",
+             req.acquisition_date, req.title, req.platform, req.price),
+        )
+        conn.commit()
+        return {"status": "recorded", "source": req.source, "order_number": req.order_number, "title": req.title}
+    finally:
+        conn.close()
+
+
+@app.get("/manual/known-order-items")
+def known_order_items() -> list[dict]:
+    """List manually recorded known-order items (receipts that never disclosed
+    their games)."""
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM known_order_items ORDER BY created_at DESC, id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
