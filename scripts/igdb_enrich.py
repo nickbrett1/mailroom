@@ -37,6 +37,7 @@ def main() -> int:
     assets.igdb_matches(ctx)
     assets.dedupe_owned_games(ctx)  # collapse duplicates by IGDB match (catalog-dedup-fix)
     assets.game_metadata(ctx)
+    assets.game_covers(ctx)  # fetch + cache cover images to /data/covers (covers-caching-design)
     assets.catalog_views(ctx)
 
     conn = connect(args.db)

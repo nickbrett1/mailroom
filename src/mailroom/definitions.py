@@ -31,6 +31,7 @@ from mailroom.verticals.game_catalog.assets import (
     catalog_views,
     classified_game_items,
     dedupe_owned_games,
+    game_covers,
     game_metadata,
     igdb_matches,
     owned_games,
@@ -58,6 +59,7 @@ catalog_daily_job = define_asset_job(
         "igdb_matches",
         "dedupe_owned_games",
         "game_metadata",
+        "game_covers",
         "catalog_views",
     ),
 )
@@ -81,6 +83,7 @@ psn_sync_job = define_asset_job(
         "igdb_matches",
         "dedupe_owned_games",
         "game_metadata",
+        "game_covers",
         "catalog_views",
     ),
 )
@@ -103,6 +106,7 @@ catalog_recheck_job = define_asset_job(
         "dedupe_owned_games",
         "catalog_quality_repairs",
         "game_metadata",
+        "game_covers",
         "catalog_views",
     ),
     config={"ops": {"igdb_matches": {"config": {"recheck": True}}}},
@@ -122,6 +126,7 @@ definitions = Definitions(
         dedupe_owned_games,
         catalog_quality_repairs,
         game_metadata,
+        game_covers,
         catalog_views,
     ],
     resources={

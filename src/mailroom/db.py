@@ -156,6 +156,21 @@ CREATE TABLE IF NOT EXISTS game_metadata (
     fetched_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Cached IGDB cover images (memos/covers-caching-design): one row per game
+-- tracking which cover was fetched, where it was written, and its status.
+-- Files live on the shared data volume at /data/covers/<image_id>.jpg (served
+-- as static files by pshelf, no live IGDB proxy). local_path is the serve-root
+-- relative URL ('/covers/<image_id>.jpg'); NULL until successfully fetched.
+-- status: 'ok' | 'missing' (upstream 404 — old file left in place).
+CREATE TABLE IF NOT EXISTS game_covers (
+    igdb_id INTEGER PRIMARY KEY,
+    image_id TEXT,
+    cover_url TEXT,               -- source cover.url it was fetched from
+    local_path TEXT,              -- '/covers/<image_id>.jpg'
+    status TEXT DEFAULT 'ok',
+    fetched_at TEXT DEFAULT (datetime('now'))
+);
+
 -- Read model for the catalog site / MCP (owned games + IGDB enrichment).
 -- Key IGDB metadata is extracted into real columns (SQLite JSON1) so agents /
 -- the site can sort and filter (top rated, by genre, by year) without parsing
@@ -184,6 +199,10 @@ SELECT
     CAST(json_extract(m.payload, '$.aggregated_rating') AS REAL) AS aggregated_rating,
     CAST(json_extract(m.payload, '$.first_release_date') AS INTEGER) AS release_ts,
     json_extract(m.payload, '$.cover.url') AS cover_url,
+    -- Local cover path once cached (game_covers); NULL until the cover asset
+    -- fetches it. pshelf serves this as a static file from its /data mount
+    -- (memos/covers-caching-design) instead of live-proxying IGDB.
+    c.local_path AS cover_local,
     (SELECT group_concat(json_extract(j.value, '$.name'), ', ')
        FROM json_each(m.payload, '$.genres') j) AS genres,
     s.playtime_minutes AS playtime_minutes,
@@ -194,6 +213,7 @@ SELECT
     s.progress AS trophy_progress
 FROM owned_games g
 LEFT JOIN game_metadata m ON m.igdb_id = g.igdb_id
+LEFT JOIN game_covers c ON c.igdb_id = g.igdb_id
 -- Trophy stats join by normalized title with ™/®/© stripped on BOTH sides
 -- (store titles carry '™' — 'ELDEN RING™' vs the trophy set's 'ELDEN RING';
 -- the trophy API exposes only the NPWR set id, not the content id). A

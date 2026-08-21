@@ -8,9 +8,11 @@ igdb_matches → game_metadata → catalog_views.
 """
 
 import json
+import os
 import re
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 from dagster import (
@@ -916,10 +918,124 @@ def game_metadata(context: AssetExecutionContext) -> None:
     context.log.info(f"game_metadata: fetched {fetched}")
 
 
-@asset(deps=[game_metadata], required_resource_keys={"db_url"})
+# IGDB cover URLs are `//images.igdb.com/igdb/image/upload/<t_size>/<image_id>.jpg`
+# — the API returns a size variant (t_cover_big) that we rewrite to the
+# higher-res t_cover_big_2x pshelf actually displays (memos/covers-caching-design).
+_IGDB_COVER_URL_RE = re.compile(r"(?:^|/)(t_[a-z0-9_]+)/([a-z0-9]+)\.jpg$", re.IGNORECASE)
+
+
+def igdb_cover_image_id(cover_url: str | None) -> str | None:
+    """Extract the IGDB image id from a cover.url.
+
+    '//images.igdb.com/igdb/image/upload/t_cover_big/co1x9c.jpg' -> 'co1x9c'.
+    This is the cache filename key (stable per image across size variants).
+    """
+    if not cover_url:
+        return None
+    m = _IGDB_COVER_URL_RE.search(cover_url)
+    return m.group(2) if m else None
+
+
+def igdb_cover_big2x_url(cover_url: str | None) -> str | None:
+    """Rewrite a cover.url to the t_cover_big_2x variant on images.igdb.com.
+
+    IGDB returns t_cover_big in the metadata payload; pshelf displays
+    t_cover_big_2x, so we fetch that variant directly (one fewer upgrade hop).
+    """
+    image_id = igdb_cover_image_id(cover_url)
+    if not image_id:
+        return None
+    return f"https://images.igdb.com/igdb/image/upload/t_cover_big_2x/{image_id}.jpg"
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write bytes to a temp file then rename, so a partially-written cover is
+    never served to pshelf (readers mount the same volume read-only)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+
+
+@asset(deps=[game_metadata], required_resource_keys={"db_url", "igdb"})
+def game_covers(context: AssetExecutionContext) -> None:
+    """Fetch and cache IGDB cover images to the shared data volume at sync time.
+
+    For every game whose IGDB metadata carries a cover URL, fetch the
+    t_cover_big_2x variant and write `/data/covers/<image_id>.jpg`, so pshelf
+    can serve covers as static files instead of live-proxying images.igdb.com
+    (memos/covers-caching-design). Idempotent: skips when the file exists AND
+    the source URL is unchanged; re-fetches when the cover URL changes (IGDB
+    metadata updates); upstream 404s leave any existing file and record
+    status='missing'. Each fetch is recorded in `game_covers`, which
+    `catalog_views` joins to expose `cover_local`.
+    """
+    covers_dir = Path(os.environ.get("MAILROOM_COVERS_DIR", "/data/covers"))
+    covers_dir.mkdir(parents=True, exist_ok=True)
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    igdb = context.resources.igdb
+    rows = conn.execute(
+        """SELECT igdb_id, json_extract(payload, '$.cover.url') AS cover_url
+           FROM game_metadata
+           WHERE json_extract(payload, '$.cover.url') IS NOT NULL"""
+    ).fetchall()
+    fetched = skipped = missing = failed = 0
+    for r in rows:
+        cover_url = r["cover_url"]
+        image_id = igdb_cover_image_id(cover_url)
+        if not image_id:
+            continue  # malformed cover.url — nothing to cache
+        local = covers_dir / f"{image_id}.jpg"
+        cached = conn.execute(
+            "SELECT cover_url FROM game_covers WHERE igdb_id = ?", (r["igdb_id"],)
+        ).fetchone()
+        if local.exists() and cached and cached["cover_url"] == cover_url:
+            skipped += 1
+            continue
+        big2x = igdb_cover_big2x_url(cover_url)
+        if not big2x:
+            continue
+        try:
+            data = igdb.fetch_image(big2x)
+        except httpx.HTTPError as exc:
+            context.log.warning(f"game_covers: fetch failed for igdb {r['igdb_id']}: {exc}")
+            failed += 1
+            continue
+        if data is None:
+            # Upstream 404 — leave any existing file in place, record missing so
+            # we don't hammer a removed cover on every sync.
+            conn.execute(
+                """INSERT INTO game_covers(igdb_id, image_id, cover_url, local_path, status, fetched_at)
+                   VALUES (?, ?, ?, NULL, 'missing', datetime('now'))
+                   ON CONFLICT(igdb_id) DO UPDATE SET
+                     image_id = excluded.image_id, cover_url = excluded.cover_url,
+                     status = 'missing', fetched_at = datetime('now')""",
+                (r["igdb_id"], image_id, cover_url),
+            )
+            missing += 1
+            continue
+        _atomic_write(local, data)
+        conn.execute(
+            """INSERT INTO game_covers(igdb_id, image_id, cover_url, local_path, status, fetched_at)
+               VALUES (?, ?, ?, ?, 'ok', datetime('now'))
+               ON CONFLICT(igdb_id) DO UPDATE SET
+                 image_id = excluded.image_id, cover_url = excluded.cover_url,
+                 local_path = excluded.local_path, status = 'ok', fetched_at = datetime('now')""",
+            (r["igdb_id"], image_id, cover_url, f"/covers/{image_id}.jpg"),
+        )
+        fetched += 1
+    conn.commit()
+    conn.close()
+    context.log.info(
+        f"game_covers: {fetched} fetched, {skipped} cached, {missing} missing(404), {failed} failed"
+    )
+
+
+@asset(deps=[game_metadata, game_covers], required_resource_keys={"db_url"})
 def catalog_views(context: AssetExecutionContext) -> None:
     """Read model for the site/MCP — a VIEW created by init_db over
-    owned_games LEFT JOIN game_metadata. Materializing ensures it exists."""
+    owned_games LEFT JOIN game_metadata (and game_covers for cover_local).
+    Materializing ensures it exists."""
     conn = connect(context.resources.db_url)
     init_db(conn)  # creates/recreates the catalog_views view
     conn.close()
