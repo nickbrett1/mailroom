@@ -27,6 +27,7 @@ def db_url_resource(context) -> str:  # type: ignore[no-untyped-def]
     """
     return os.environ.get("MAILROOM_DB_URL", "sqlite:////data/mailroom.db")
 from mailroom.verticals.game_catalog.assets import (
+    backfill_missing_receipts,
     catalog_quality_repairs,
     catalog_views,
     classified_game_items,
@@ -117,6 +118,7 @@ definitions = Definitions(
         raw_psn_receipts,
         parsed_purchases_digital,
         raw_retailer_receipts,
+        backfill_missing_receipts,
         parsed_purchases_physical,
         classified_game_items,
         owned_games,

@@ -127,3 +127,86 @@ def test_parse_source_mercari_uses_subject():
 def test_parse_source_unknown_returns_empty():
     assert parse_source("nope", body="x") == []
     assert source_by_name("nope") is None
+
+
+def test_gamestop_source_covers_order_confirmation_sender_and_subject():
+    """Order confirmations arrive from notifications@info.gamestop.com with
+    subject 'Thank you for your order!' (msg 42957) — not the legacy
+    orders@em.gamestop.com / 'Thanks for your Gamestop.com order' combo."""
+    gs = source_by_name("gamestop")
+    assert "notifications@info.gamestop.com" in gs.senders
+    assert "orders@em.gamestop.com" in gs.senders
+    assert any("Thank you for your order" in s for s in gs.subject_contains)
+    assert any("Thanks for your Gamestop.com order" in s for s in gs.subject_contains)
+
+
+# Real GameStop order confirmation (msgvault 42957, 2023-06-22, order
+# 1100000059461018) — the four PlayStation games that were missed because the
+# sender wasn't configured.
+GAMESTOP_2023 = """Thank you for your order, Nicholas
+
+Order Number: 1100000059461018
+
+Order Date: 6/22/23
+
+Order Total
+$52.25
+
+Total Savings $28.96
+
+SHIP TO HOME
+
+Shipping to 80 RIVERSIDE BLVD
+
+13 Sentinels: Aegis Rim - PlayStation 4
+
+QTY: 1
+
+$14.99
+
+Returnal - PlayStation 5
+
+QTY: 1
+
+$19.99
+
+Deathloop - PlayStation 5
+
+QTY: 1
+
+$14.99
+
+Ghostwire: Tokyo Standard Edition - PlayStation 5
+
+QTY: 1
+
+$18.99
+
+ORDER SUMMARY
+
+Subtotal
+
+$68.96
+
+Estimated Tax
+
+$4.26
+
+Estimated Total
+
+$52.25
+"""
+
+
+def test_parse_source_gamestop_2023_confirmation():
+    ps = parse_source("gamestop", body=GAMESTOP_2023, message_id="42957")
+    assert len(ps) == 1
+    assert ps[0].order_number == "1100000059461018"
+    titles = [i.title for i in ps[0].items]
+    assert titles == [
+        "13 Sentinels: Aegis Rim - PlayStation 4",
+        "Returnal - PlayStation 5",
+        "Deathloop - PlayStation 5",
+        "Ghostwire: Tokyo Standard Edition - PlayStation 5",
+    ]
+    assert ps[0].total == "$52.25"
