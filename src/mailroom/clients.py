@@ -286,6 +286,22 @@ class IgdbClient:
         )
         return rows[0] if rows else {}
 
+    def fetch_image(self, url: str) -> bytes | None:
+        """Fetch an image (e.g. an IGDB cover) and return its bytes.
+
+        Covers live on images.igdb.com (a CDN) and need no auth token, so this
+        is a plain GET — but it shares the client's pacing to stay gentle.
+        Returns None on 404 (cover removed upstream) so the caller can leave
+        an existing cached file in place.
+        """
+        self._pace()
+        self._last_request = time.monotonic()
+        resp = httpx.get(url, timeout=30.0)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.content
+
 
 class PsnAuthError(Exception):
     """PSN auth rejected (refresh token invalid/expired) — degrade, never hard-fail."""

@@ -27,6 +27,8 @@ services:
       PSN_CLIENT_ID: ${PSN_CLIENT_ID}
       PSN_CLIENT_SECRET: ${PSN_CLIENT_SECRET}
       DAGSTER_HOME: ${DAGSTER_HOME:-/data/dagster}
+      # Cover cache dir on the shared data volume (pshelf serves it read-only).
+      MAILROOM_COVERS_DIR: ${MAILROOM_COVERS_DIR:-/data/covers}
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
       - "homepage.group=Services"
