@@ -38,6 +38,34 @@ _ITEM_RE = re.compile(r"(?m)^\* (.*)$")
 _QTY_RE = re.compile(r"Quantity:\s*(\d+)", re.IGNORECASE)
 _PRICE_RE = re.compile(r"^\s*([\d,]+\.\d{2})\s*USD\s*$", re.MULTILINE)
 _TOTAL_RE = re.compile(r"(?:Grand\s+)?Total\s*:?\s*\n?\s*([\d,]+\.\d{2})\s*USD", re.IGNORECASE)
+# Delivery-estimate template (order-update@amazon.com, subject "Delivery
+# estimate update for your Amazon.com order #..."): items are NOT '*'-prefixed
+# and carry no qty/price. Each item is an indented line directly above a
+# "Sold by Amazon.com Services" line. Verified msg 65274 (Uncharted: Nathan
+# Drake Collection), 39189 (Theatrhythm Final Bar Line), 64330 (Keurig).
+_SOLD_BY_RE = re.compile(r"(?m)^\s*Sold by Amazon\.com Services[^\n]*$")
+# Item titles must not be order-block boilerplate lines.
+_DELIVERY_ITEM_SKIP = ("order #", "placed on", "new estimated", "previous estimated", "sold by")
+
+
+def _delivery_estimate_items(block: str) -> list[PurchaseItem]:
+    """Extract item titles from the Delivery-estimate template.
+
+    Each "Sold by Amazon.com Services" line is preceded by the item title (the
+    last non-blank line above it, e.g. 'Uncharted: Nathan Drake Collection
+    Hits - PlayStation 4'). The classifier gate filters non-game items later.
+    """
+    items: list[PurchaseItem] = []
+    for m in _SOLD_BY_RE.finditer(block):
+        header = block[: m.start()]
+        lines = [ln.strip() for ln in header.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        title = lines[-1]
+        if not title or title.lower().startswith(_DELIVERY_ITEM_SKIP):
+            continue
+        items.append(PurchaseItem(title=title, price=None, qty=1))
+    return items
 
 
 def _parse_order_block(block: str, message_id: str | None) -> Purchase | None:
@@ -59,6 +87,12 @@ def _parse_order_block(block: str, message_id: str | None) -> Purchase | None:
             if price_match:
                 price = f"${price_match.group(1)}"
         items.append(PurchaseItem(title=title, price=price, qty=qty))
+    # Delivery-estimate template: no '*'-prefixed lines, so fall back to the
+    # item(s) above each "Sold by Amazon.com Services" line. Only used when
+    # the standard parse found nothing, so Ordered/Shipped/Delivered bodies
+    # are unaffected.
+    if not items:
+        items = _delivery_estimate_items(block)
     if not items:
         return None
     total_match = _TOTAL_RE.search(block)

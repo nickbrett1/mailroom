@@ -41,9 +41,13 @@ class RetailerSource:
 RETAILER_SOURCES: list[RetailerSource] = [
     RetailerSource(
         name="gamestop",
-        senders=["orders@em.gamestop.com"],
+        # Order confirmations arrive from notifications@info.gamestop.com
+        # (subject "Thank you for your order!", verified msg 42957 = order
+        # 1100000059461018, 2023-06-22). The legacy orders@em.gamestop.com
+        # sender used "Thanks for your Gamestop.com order" — keep both.
+        senders=["orders@em.gamestop.com", "notifications@info.gamestop.com"],
         parser=parse_gamestop_receipt,
-        subject_contains=["Thanks for your Gamestop.com order"],
+        subject_contains=["Thank you for your order", "Thanks for your Gamestop.com order"],
     ),
     RetailerSource(
         name="amazon",

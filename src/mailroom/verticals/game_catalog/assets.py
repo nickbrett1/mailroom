@@ -395,6 +395,62 @@ def raw_retailer_receipts(context: AssetExecutionContext) -> None:
     conn.close()
 
 
+@asset(
+    required_resource_keys={"db_url", "msgvault"},
+    config_schema={
+        "message_ids": Field(list, is_required=True, description="msgvault message ids to backfill into raw_receipts")
+    },
+)
+def backfill_missing_receipts(context: AssetExecutionContext) -> None:
+    """Targeted receipt backfill — ingest a specific set of msgvault message
+    ids into raw_receipts so a missed game can re-enter the owned catalog
+    without a full history re-ingest.
+
+    Use when an order email predates the ingestion window (e.g. the Amazon
+    Delivery-estimate email for 'Uncharted: Nathan Drake Collection', msg
+    65274, or the GameStop order confirmation 42957) and the sender was never
+    picked up by raw_retailer_receipts' incremental cursor. The source is
+    inferred from the message sender, so the receipt lands under the right
+    retailer and flows through parsed_purchases_physical → classified →
+    owned_games on the next materialization. Trigger from the UI or MCP:
+
+        Materialize with config {"message_ids": [65274, 39189, 42957]}
+    """
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    client = context.resources.msgvault
+    ids = list(context.op_config["message_ids"])
+    # sender -> retailer source name
+    sender_to_source = {
+        s.lower(): src.name for src in RETAILER_SOURCES for s in src.senders
+    }
+    done = 0
+    for mid in ids:
+        detail = client.get_message(int(mid))
+        sender = (detail.get("from_email") or "").lower()
+        source = sender_to_source.get(sender)
+        if source is None:
+            context.log.warning(f"backfill_missing_receipts: no retailer for msg {mid} (sender {sender}) — skipped")
+            continue
+        upsert_raw_receipt(
+            conn,
+            {
+                "message_id": str(mid),
+                "source": source,
+                "subject": detail.get("subject") or "",
+                "sender": detail.get("from_email") or sender,
+                "received_at": detail.get("sent_at") or "",
+                "body": detail.get("body_text") or "",
+                "body_html": detail.get("body_html") or "",
+            },
+        )
+        done += 1
+        context.log.info(f"backfill_missing_receipts: ingested msg {mid} -> {source}")
+    conn.commit()
+    conn.close()
+    context.log.info(f"backfill_missing_receipts: {done}/{len(ids)} receipts backfilled")
+
+
 @asset(deps=[raw_retailer_receipts], required_resource_keys={"db_url"})
 def parsed_purchases_physical(context: AssetExecutionContext) -> None:
     """Parse stored retailer receipts into normalized purchases (one row per

@@ -264,3 +264,81 @@ Total
 """
     ps = parse_amazon_receipt(body, message_id="9989", subject="Order canceled")
     assert ps == []
+
+
+# Real delivery-estimate email (msgvault 65274, 2021-05-02) — the template
+# where the item is an indented line above "Sold by Amazon.com Services" with
+# no '*' prefix, no qty and no price. This was the gap that missed
+# "Uncharted: Nathan Drake Collection" from the owned catalog.
+DELIVERY_ESTIMATE_UNCHARTED = """
+Delivery Estimate Update
+www.amazon.com/ref=fxm_4_0_tex_h
+_________________________________________________________________________________________________
+
+Hello,
+We have an updated delivery estimate for your Amazon order. As soon as your items ship, we'll send you an email confirmation. To view the status of your order or make changes, please go to <a href="https://www.amazon.com/yourorders?ref_=fxm_3_0_yo_tn">Your Orders</a>. 
+
+=================================================================================================
+
+Order #111-7703809-7385008
+Placed on  Thursday, April 29, 2021
+
+        Uncharted: Nathan Drake Collection Hits - PlayStation 4
+        Sold by Amazon.com Services LLC
+
+            New estimated delivery date: Monday, May 10, 2021 - Tuesday, May 11, 2021
+            Previous estimated delivery date: Monday, May 17, 2021 - Wednesday, May 19, 2021
+
+=================================================================================================
+
+If you need further assistance with your order, please visit Help & Customer Service:<br />http://www.amazon.com/help?ref=fxm_4_0_tex_cs
+
+We hope to see you again soon.<br />Amazon.com
+_________________________________________________________________________________________________
+
+This email was sent from a notification-only address that cannot accept incoming email. Please do not reply to this message. 
+"""
+
+
+def test_delivery_estimate_email_captures_item():
+    """A Delivery-estimate update (no '*' lines, no qty/price) must still
+    yield the item so it can enter the owned catalog via the receipt chain."""
+    ps = parse_amazon_receipt(
+        DELIVERY_ESTIMATE_UNCHARTED,
+        message_id="65274",
+        subject="Delivery estimate update for your Amazon.com order #111-7703809-7385008",
+    )
+    assert len(ps) == 1
+    p = ps[0]
+    assert p.order_number == "111-7703809-7385008"
+    assert p.total is None  # delivery-estimate emails carry no total
+    assert len(p.items) == 1
+    item = p.items[0]
+    assert item.title == "Uncharted: Nathan Drake Collection Hits - PlayStation 4"
+    assert item.price is None
+    assert item.qty == 1
+    # The item flows through the platform gate as a PlayStation game.
+    assert classify_item(item.title).classification == "playstation_game"
+
+
+def test_delivery_estimate_skips_boilerplate_lines():
+    """The item-title fallback must not swallow the 'Order #'/'Placed on'
+    header as an item title."""
+    ps = parse_amazon_receipt(
+        DELIVERY_ESTIMATE_UNCHARTED,
+        message_id="65274",
+        subject="Delivery estimate update for your Amazon.com order #111-7703809-7385008",
+    )
+    assert all(not i.title.lower().startswith(("order #", "placed on")) for p in ps for i in p.items)
+
+
+def test_standard_template_unaffected_by_delivery_fallback():
+    """The fallback only runs when there are no '*'-prefixed items; a normal
+    Ordered body must still parse exactly as before (one item, price + total)."""
+    ps = parse_amazon_receipt(ORDERED_SINGLE, message_id="7845")
+    assert len(ps) == 1
+    item = ps[0].items[0]
+    assert item.title == "Sonic Superstars - PlayStation 5"
+    assert item.price == "$15.56"
+    assert item.qty == 1
+    assert ps[0].total == "$16.94"
