@@ -60,6 +60,7 @@ catalog_daily_job = define_asset_job(
         "owned_games",
         "igdb_matches",
         "dedupe_owned_games",
+        "catalog_quality_repairs",
         "game_metadata",
         "game_covers",
         "catalog_views",

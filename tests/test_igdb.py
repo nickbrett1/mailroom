@@ -247,6 +247,65 @@ def test_game_metadata_paced_resumable_and_catalog_view():
     conn.close()
 
 
+def test_game_metadata_backfills_generic_platform_and_marks_psvr2():
+    """A generic 'playstation' owned row backfills to the concrete PS5 when the
+    matched IGDB entry's platforms are unambiguous, and the view flags PSVR2
+    (platform id 390) without changing the platform (PSVR2 runs on PS5)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Some VR Game", platform="playstation", igdb_id=777001)
+    conn.close()
+
+    stub = _StubIgdb(details={777001: {"id": 777001, "name": "Some VR Game",
+                                       "platforms": [{"id": 167, "name": "PlayStation 5"},
+                                                     {"id": 390, "name": "PlayStation VR2"}]}})
+    assets.game_metadata(_ctx(f"sqlite:///{db}", stub))
+    assets.catalog_views(_ctx(f"sqlite:///{db}", stub))
+
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT platform FROM owned_games").fetchone()
+    assert row["platform"] == "playstation 5", "generic row must backfill to PS5 (167 present)"
+    view = conn.execute("SELECT is_psvr2 FROM catalog_views").fetchone()
+    assert view["is_psvr2"] == 1, "platform 390 (PSVR2) must flag is_psvr2"
+    conn.close()
+
+
+def test_game_metadata_backfills_generic_platform_to_ps4():
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Some PS4 Game", platform="ps", igdb_id=777002)
+    conn.close()
+
+    stub = _StubIgdb(details={777002: {"id": 777002, "name": "Some PS4 Game",
+                                       "platforms": [{"id": 48, "name": "PlayStation 4"}]}})
+    assets.game_metadata(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT platform FROM owned_games").fetchone()
+    assert row["platform"] == "playstation 4"
+    conn.close()
+
+
+def test_game_metadata_backfill_leaves_crossgen_ambiguous():
+    """A cross-gen game (both PS4 AND PS5) has no single concrete platform —
+    the generic row is left alone rather than guessed."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Cross Gen Game", platform="playstation", igdb_id=777003)
+    conn.close()
+
+    stub = _StubIgdb(details={777003: {"id": 777003, "name": "Cross Gen Game",
+                                       "platforms": [{"id": 48, "name": "PlayStation 4"},
+                                                     {"id": 167, "name": "PlayStation 5"}]}})
+    assets.game_metadata(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT platform FROM owned_games").fetchone()
+    assert row["platform"] == "playstation", "cross-gen must stay generic (ambiguous)"
+    conn.close()
+
+
 def test_owned_games_receipts_path_supplies_ownership_class():
     """Regression: the receipts path of owned_games must supply ownership_class
     (latent bug from the schema change — ProgrammingError otherwise)."""

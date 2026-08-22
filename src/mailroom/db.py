@@ -223,6 +223,14 @@ SELECT
     c.local_path AS cover_local,
     (SELECT group_concat(json_extract(j.value, '$.name'), ', ')
        FROM json_each(m.payload, '$.genres') j) AS genres,
+    -- PSVR2 flag: IGDB platform id 390 (PlayStation VR2). PSVR2 games RUN on
+    -- PS5, so `platform` stays 'playstation 5' — this is a category flag, not
+    -- a platform value, so it never breaks the (igdb_id, platform, format)
+    -- dedup key (memos/game-catalog-platforms).
+    CASE WHEN EXISTS (
+        SELECT 1 FROM json_each(m.payload, '$.platforms') p
+        WHERE json_extract(p.value, '$.id') = 390
+    ) THEN 1 ELSE 0 END AS is_psvr2,
     s.playtime_minutes AS playtime_minutes,
     CASE WHEN s.playtime_minutes IS NOT NULL
          THEN CAST(ROUND(s.playtime_minutes / 60.0, 1) AS REAL) END AS hours_played,
