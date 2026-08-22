@@ -385,6 +385,26 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, ddl: str) -> None:
+    """ALTER TABLE ADD COLUMN guarded against concurrent first-time migration.
+
+    Two assets (e.g. raw_psn_receipts + raw_retailer_receipts) call init_db in
+    parallel. Both can read `PRAGMA table_info` before either commits, so both
+    attempt the same ADD COLUMN — the second fails with 'duplicate column name:
+    <col>'. Catching that (and re-checking) makes the migration idempotent
+    under the race (seen live 2026-08-22 with the game_id column).
+    """
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if col in cols:
+        return
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" in str(exc).lower():
+            return  # a concurrent init_db already added it
+        raise
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """Additive column migrations for databases created before a schema change.
 
@@ -392,13 +412,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     partially-created database: every table access is existence-guarded."""
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     if "owned_games" in tables:
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(owned_games)").fetchall()}
-        if "ownership_class" not in cols:
-            conn.execute("ALTER TABLE owned_games ADD COLUMN ownership_class TEXT DEFAULT 'purchased'")
-        if "retire_reason" not in cols:
-            conn.execute("ALTER TABLE owned_games ADD COLUMN retire_reason TEXT")
-        if "game_id" not in cols:
-            conn.execute("ALTER TABLE owned_games ADD COLUMN game_id INTEGER")
+        _add_column_if_missing(conn, "owned_games", "ownership_class", "ownership_class TEXT DEFAULT 'purchased'")
+        _add_column_if_missing(conn, "owned_games", "retire_reason", "retire_reason TEXT")
+        _add_column_if_missing(conn, "owned_games", "game_id", "game_id INTEGER")
     # game_stats predates the trophy-title join (created 2026-08-20 with NPWR
     # ids stuffed into psn_content_id and no title column — unusable). Recreate
     # with the NPWR key + normalized_title join.
