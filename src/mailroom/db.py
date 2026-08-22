@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from typing import Any
 
 DEFAULT_DB_PATH = os.environ.get("MAILROOM_DB", "/data/mailroom.db")
@@ -378,11 +379,30 @@ def init_db(conn: sqlite3.Connection) -> None:
     _migrate runs FIRST so table reshapes (game_stats) land before the SCHEMA
     creates views that reference the new columns (catalog_views joins
     game_stats.normalized_title).
+
+    SAFE UNDER CONCURRENT init_db: several assets (raw_psn_receipts +
+    raw_retailer_receipts, etc.) call init_db in parallel, and the DDL is not
+    fully race-free (DROP VIEW + CREATE VIEW, ALTER ADD COLUMN). Transient
+    'already exists' / 'duplicate column name' / 'no such view' races are
+    retried (they resolve once the other writer commits); real errors raise.
     """
-    _migrate(conn)
-    conn.executescript(SCHEMA)
-    _ensure_dedup_index(conn)
-    conn.commit()
+    for attempt in range(1, 6):
+        try:
+            _migrate(conn)
+            conn.executescript(SCHEMA)
+            _ensure_dedup_index(conn)
+            conn.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            transient = ("already exists" in msg
+                         or "duplicate column name" in msg
+                         or "no such view" in msg
+                         or "no such table" in msg)
+            if not transient or attempt == 5:
+                raise
+            conn.rollback()
+            time.sleep(0.3 * attempt)
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, ddl: str) -> None:
