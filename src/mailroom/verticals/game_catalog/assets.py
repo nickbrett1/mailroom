@@ -1219,3 +1219,66 @@ def catalog_views(context: AssetExecutionContext) -> None:
     init_db(conn)  # creates/recreates the catalog_views view
     conn.close()
     context.log.info("catalog_views: view ensured")
+
+
+@asset(
+    deps=[owned_games, dedupe_owned_games, catalog_quality_repairs, game_metadata],
+    required_resource_keys={"db_url"},
+)
+def catalog_games(context: AssetExecutionContext) -> None:
+    """Build the canonical `games` table + reparent owned_games under it.
+
+    One row per LOGICAL game (memos/catalog-games-model): multiple editions /
+    purchases of the same game (Alien Isolation + 'The Collection', Arcade
+    Paradise + its VR version, Slay the Spire bought AND PS+ claimed) collapse
+    into a single game whose `editions` JSON aggregates the owned rows. The
+    front-end reads catalog_games (one card per game); owned_games stays the
+    per-edition/per-purchase record.
+    """
+    from mailroom.verticals.game_catalog.game_groups import build_games
+
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    rows = conn.execute("SELECT * FROM owned_games WHERE is_owned = 1").fetchall()
+    meta_rows = conn.execute("SELECT igdb_id, payload FROM game_metadata").fetchall()
+    metadata: dict[int, dict] = {}
+    for r in meta_rows:
+        if r["payload"]:
+            try:
+                metadata[r["igdb_id"]] = json.loads(r["payload"])
+            except (ValueError, TypeError):
+                pass
+    games, report = build_games([dict(r) for r in rows], metadata=metadata)
+
+    conn.execute("DELETE FROM games")
+    reparented = 0
+    for g in games:
+        editions = json.loads(g["editions"])
+        cur = conn.execute(
+            """INSERT INTO games(title, normalized_title, igdb_id, platform, platforms,
+                   formats, ownership_classes, num_editions, purchased,
+                   earliest_acquisition, price, provenance, editions, is_psvr2,
+                   created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                g["title"], g["normalized_title"], g["igdb_id"], g["platform"],
+                g["platforms"], g["formats"], g["ownership_classes"], g["num_editions"],
+                g["purchased"], g["earliest_acquisition"], g["price"], g["provenance"],
+                g["editions"], g["is_psvr2"],
+            ),
+        )
+        gid = cur.lastrowid
+        ids = [e["id"] for e in editions]
+        if ids:
+            conn.execute(
+                f"UPDATE owned_games SET game_id = ? WHERE id IN ({','.join('?' * len(ids))})",
+                (gid, *ids),
+            )
+            reparented += len(ids)
+    conn.commit()
+    conn.close()
+    report.reparented = reparented
+    context.log.info(
+        f"catalog_games: {report.games} games from {reparented} owned editions "
+        f"({len(report.groups)} groups)"
+    )

@@ -24,7 +24,8 @@ mcp = FastMCP(
     "mailroom-catalog",
     instructions=(
         "Read-only PlayStation game catalog (owned games + IGDB metadata). "
-        "Tools: search_catalog, get_game, catalog_stats, recently_added. "
+        "Tools: search_catalog, get_game, catalog_stats, recently_added, "
+        "list_games (game-centric — one row per game with aggregated editions). "
         "ownership_class: purchased | psplus_claimed | psplus_extra. "
         "format: digital | physical. is_psvr2: true filters to PSVR2 titles "
         "(a category flag — PSVR2 games are still platform 'playstation 5')."
@@ -114,6 +115,52 @@ def top_rated(limit: int = 20, platform: str | None = None, format: str | None =
     try:
         rows = conn.execute(sql + " ORDER BY rating IS NULL, rating DESC LIMIT ?", [*params, min(limit, 200)]).fetchall()
         return [_game(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@mcp.tool
+def list_games(
+    query: str | None = None,
+    platform: str | None = None,
+    is_psvr2: bool | None = None,
+    purchased: bool | None = None,
+    sort: str = "title",
+    limit: int = 50,
+) -> list[dict]:
+    """Game-centric catalog: ONE row per logical game (editions/purchases of
+    the same game are aggregated under `editions`). This is the model the
+    catalog front-end lists. sort: title | rating | recent | editions.
+    Filter by platform substring or is_psvr2/purchased."""
+    sql = "SELECT * FROM catalog_games WHERE 1=1"
+    params: list = []
+    if query:
+        sql += " AND title LIKE ?"
+        params.append(f"%{query}%")
+    if platform:
+        sql += " AND platforms LIKE ?"
+        params.append(f"%{platform}%")
+    if is_psvr2 is not None:
+        sql += " AND is_psvr2 = ?"
+        params.append(1 if is_psvr2 else 0)
+    if purchased is not None:
+        sql += " AND purchased = ?"
+        params.append(1 if purchased else 0)
+    order = {
+        "title": "title COLLATE NOCASE ASC",
+        "rating": "rating IS NULL, rating DESC",
+        "recent": "release_ts IS NULL, release_ts DESC",
+        "editions": "num_editions DESC, title COLLATE NOCASE ASC",
+    }.get(sort, "title COLLATE NOCASE ASC")
+    conn = _conn()
+    try:
+        rows = conn.execute(sql + f" ORDER BY {order} LIMIT ?", [*params, min(limit, 200)]).fetchall()
+        out = []
+        for r in rows:
+            g = _game(r)
+            g["editions"] = json.loads(g.get("editions")) if g.get("editions") else []
+            out.append(g)
+        return out
     finally:
         conn.close()
 
