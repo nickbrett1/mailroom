@@ -172,6 +172,31 @@ def test_igdb_matches_falls_back_when_stripped_term_misses():
     conn.close()
 
 
+def test_igdb_search_term_strips_hits_branding():
+    """'Hits' (PlayStation Hits re-release branding) is stripped so the search
+    term drops the branding; the internal ':' is retained (matching the rest
+    of the pipeline — token matching strips punctuation downstream)."""
+    assert assets.igdb_search_term("Uncharted: Nathan Drake Collection Hits - PlayStation 4") == "uncharted: nathan drake collection"
+    assert assets._igdb_norm("Uncharted: Nathan Drake Collection Hits") == "uncharted: nathan drake collection"
+
+
+def test_igdb_matches_hits_branding_title():
+    """A 'Hits' re-release title matches its plain IGDB entry (forward token
+    containment handles the IGDB 'The' that the title omits)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Uncharted: Nathan Drake Collection Hits - PlayStation 4", platform="playstation 4")
+    conn.close()
+
+    stub = _StubIgdb(search={"uncharted: nathan drake collection": [{"id": 35316, "name": "Uncharted: The Nathan Drake Collection", "platforms": [48]}]})
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 35316
+    conn.close()
+
+
 def test_igdb_matches_digital_via_external_and_physical_via_search():
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")

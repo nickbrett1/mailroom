@@ -736,9 +736,14 @@ def _roman_to_arabic(s: str) -> str:
 
 def _igdb_norm(s: str) -> str:
     """Normalize a title/name for comparison: strip punctuation/platform
-    words, roman numerals -> digits, collapse whitespace."""
+    words, roman numerals -> digits, collapse whitespace.
+
+    'hits' is Amazon/Sony's "PlayStation Hits" budget re-release branding —
+    'Uncharted: Nathan Drake Collection Hits' is the same game as IGDB's
+    'Uncharted: The Nathan Drake Collection', so it is dropped for matching.
+    """
     s = re.sub(r"[™®©&()]", " ", s, flags=re.IGNORECASE)
-    s = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45]|game)\b", " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45]|game|hits)\b", " ", s, flags=re.IGNORECASE)
     s = re.sub(r"\s+", " ", s).strip(" -–—:;").lower()
     return _roman_to_arabic(s)
 
@@ -790,7 +795,7 @@ def igdb_search_term(title: str) -> str:
     t = re.sub(r"[\u0300-\u036f]", "", t)  # combining marks
     t = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u2300-\u23FF\u2200-\u22FF]", " ", t)  # emoji/dingbats/math symbols (ZONE OF THE ENDERS …M∀RS)
     t = re.split(r"\s+w/", t)[0]           # drop eBay 'w/ <variant>' suffixes
-    t = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45])\b", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b(?:ps4|ps5|ps vita|psvita|ps3|playstation\s*[45]|for playstation\s*[45]|hits)\b", " ", t, flags=re.IGNORECASE)  # 'hits' = PlayStation Hits re-release branding
     # Edition phrases FIRST (they contain stopwords — 'standard edition' must
     # go as a phrase, not be reduced to a stray 'standard' by the stopword
     # pass below, which would pollute the search term and the token gate).
