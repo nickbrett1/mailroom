@@ -126,12 +126,42 @@ CREATE TABLE IF NOT EXISTS owned_games (
     is_owned INTEGER DEFAULT 1,
     provenance TEXT,
     retire_reason TEXT,          -- set when a dup-merge retires a row (never delete)
+    game_id INTEGER,             -- parent canonical game (games.id) — NULL until the
+                                 -- catalog_games pass groups this ownership record under
+                                 -- a logical game (memos/catalog-games-model)
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_owned_games_norm ON owned_games(normalized_title);
 CREATE INDEX IF NOT EXISTS idx_owned_games_platform ON owned_games(platform);
+CREATE INDEX IF NOT EXISTS idx_owned_games_game ON owned_games(game_id);
+
+-- Canonical games: one row per logical game, aggregating the multiple
+-- purchases/editions that live in owned_games (memos/catalog-games-model).
+-- The front-end lists THIS (one card per game); owned_games stays the
+-- per-edition/per-purchase ownership record.
+CREATE TABLE IF NOT EXISTS games (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,             -- canonical display title (base edition)
+    normalized_title TEXT NOT NULL,
+    igdb_id INTEGER,                 -- primary IGDB match (base edition)
+    platform TEXT,                   -- aggregated display platform
+    platforms TEXT,                  -- distinct platforms, comma-joined
+    formats TEXT,                    -- distinct formats, comma-joined
+    ownership_classes TEXT,          -- distinct ownership classes, comma-joined
+    num_editions INTEGER DEFAULT 0,  -- number of owned editions/purchases
+    purchased INTEGER DEFAULT 0,     -- 1 if any edition was bought (not just claimed)
+    earliest_acquisition TEXT,
+    price TEXT,                      -- the base edition's price (editions carry the rest)
+    provenance TEXT,
+    editions TEXT,                   -- JSON array of owned-edition summaries
+    is_psvr2 INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_games_norm ON games(normalized_title);
+CREATE INDEX IF NOT EXISTS idx_games_igdb ON games(igdb_id);
 -- Dedup guard (memos/catalog-dedup-fix): at most one OWNED row per enriched
 -- (igdb_id, platform, format). format is part of the key because a digital +
 -- physical copy of the same game legitimately coexist (the memo's open
@@ -248,6 +278,45 @@ LEFT JOIN game_stats s ON s.normalized_title = replace(replace(replace(
     g.normalized_title, '™', ''), '®', ''), '©', '')
 WHERE g.is_owned = 1;
 
+-- Game-centric read model for the catalog front-end (memos/catalog-games-model):
+-- ONE row per logical game, with the aggregated ownership/edition info in
+-- `editions` (a JSON array of owned_games rows). Consumers that want the
+-- per-purchase view still read catalog_views; the front-end grid reads THIS.
+DROP VIEW IF EXISTS catalog_games;
+CREATE VIEW catalog_games AS
+SELECT
+    g.id AS game_id,
+    g.title,
+    g.normalized_title,
+    g.igdb_id,
+    g.platform,
+    g.platforms,
+    g.formats,
+    g.ownership_classes,
+    g.num_editions,
+    g.purchased,
+    g.earliest_acquisition,
+    g.price,
+    g.provenance,
+    g.editions,
+    g.is_psvr2,
+    m.payload AS igdb_payload,
+    CAST(json_extract(m.payload, '$.total_rating') AS REAL) AS rating,
+    CAST(json_extract(m.payload, '$.aggregated_rating') AS REAL) AS aggregated_rating,
+    CAST(json_extract(m.payload, '$.first_release_date') AS INTEGER) AS release_ts,
+    json_extract(m.payload, '$.cover.url') AS cover_url,
+    c.local_path AS cover_local,
+    (SELECT group_concat(json_extract(j.value, '$.name'), ', ')
+       FROM json_each(m.payload, '$.genres') j) AS genres,
+    s.playtime_minutes AS playtime_minutes,
+    CASE WHEN s.playtime_minutes IS NOT NULL
+         THEN CAST(ROUND(s.playtime_minutes / 60.0, 1) AS REAL) END AS hours_played
+FROM games g
+LEFT JOIN game_metadata m ON m.igdb_id = g.igdb_id
+LEFT JOIN game_covers c ON c.igdb_id = g.igdb_id
+LEFT JOIN game_stats s ON s.normalized_title = replace(replace(replace(
+    g.normalized_title, '™', ''), '®', ''), '©', '');
+
 -- Source authentication (PSN PS-App OAuth refresh token, future API sources).
 -- Token lives here (not .env) so a UI can refresh it without container edits.
 CREATE TABLE IF NOT EXISTS credentials (
@@ -328,6 +397,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE owned_games ADD COLUMN ownership_class TEXT DEFAULT 'purchased'")
         if "retire_reason" not in cols:
             conn.execute("ALTER TABLE owned_games ADD COLUMN retire_reason TEXT")
+        if "game_id" not in cols:
+            conn.execute("ALTER TABLE owned_games ADD COLUMN game_id INTEGER")
     # game_stats predates the trophy-title join (created 2026-08-20 with NPWR
     # ids stuffed into psn_content_id and no title column — unusable). Recreate
     # with the NPWR key + normalized_title join.
