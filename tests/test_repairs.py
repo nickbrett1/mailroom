@@ -330,8 +330,10 @@ def test_merges_gamekey_purchase_as_provenance():
     assert len(report.merged) == 2
 
     rows = {r["title"]: r for r in conn.execute("SELECT * FROM owned_games WHERE is_owned = 1").fetchall()}
-    assert "gameflip:gf-1:0" in rows["Desperados III (Game)"]["provenance"]
-    assert rows["Desperados III (Game)"]["price"] == "$12.99"
+    # title cleanup strips the '(Game)' catalog marker
+    assert "Desperados III" in rows
+    assert "gameflip:gf-1:0" in rows["Desperados III"]["provenance"]
+    assert rows["Desperados III"]["price"] == "$12.99"
     assert "gameflip:gf-2:0" in rows["Republique"]["provenance"]
     assert rows["Republique"]["price"] == "$8.99"
 
@@ -341,10 +343,100 @@ def test_merges_gamekey_purchase_as_provenance():
     assert statuses["Blaze Evercade Tomb Raider Collection 1"] == "open"  # skipped (non-PS)
 
     # idempotent: re-run adds nothing
-    before = conn.execute("SELECT provenance FROM owned_games WHERE title = 'Desperados III (Game)'").fetchone()[0]
+    before = conn.execute("SELECT provenance FROM owned_games WHERE title = 'Desperados III'").fetchone()[0]
     apply_catalog_repairs(conn)
-    after = conn.execute("SELECT provenance FROM owned_games WHERE title = 'Desperados III (Game)'").fetchone()[0]
+    after = conn.execute("SELECT provenance FROM owned_games WHERE title = 'Desperados III'").fetchone()[0]
     assert before == after
+
+
+def test_title_cleanup_strips_platform_suffix_and_more_items():
+    """'Diablo IV - PlayStation 5 and 1 more item' is a broken parse (a listing
+    summary swallowed into the title): the ' and N more items' tail and the
+    ' - PlayStation 5' platform suffix are stripped, leaving the real title —
+    the row is NOT retired (it IS a game)."""
+    conn, _ = _db()
+    pid = _seed(
+        conn,
+        title="Diablo IV - PlayStation 5 and 1 more item",
+        platform="playstation 5",
+        format="physical",
+        source="gamestop",
+        order_number="o-diablo",
+        igdb_id=None,
+    )
+    report = apply_catalog_repairs(conn)
+    assert report.retired == []
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (pid,)).fetchone()
+    assert row["title"] == "Diablo IV"
+    assert row["normalized_title"] == "diablo iv"
+    assert row["is_owned"] == 1
+    conn.close()
+
+
+def test_title_cleanup_retires_vita_console_hardware():
+    """'PlayStation Vita Wi-Fi... and 6 more items' is a console hardware
+    listing (not a game) that slipped through the platform gate — after the
+    ' and N more items' tail is stripped, the Vita-console model is retired
+    as not_a_game:hardware_console."""
+    conn, _ = _db()
+    pid = _seed(
+        conn,
+        title="PlayStation Vita Wi-Fi and 6 more items",
+        platform="playstation",
+        format="physical",
+        source="ebay",
+        igdb_id=None,
+    )
+    report = apply_catalog_repairs(conn)
+    assert [r["id"] for r in report.retired] == [pid]
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (pid,)).fetchone()
+    assert row["is_owned"] == 0
+    assert row["retire_reason"] == "not_a_game:hardware_console"
+    conn.close()
+
+
+def test_title_alias_merges_coffeetalk_into_coffee_talk():
+    """'CoffeeTalk' (PSN's concatenated spelling, no cover) is the same game
+    as 'Coffee Talk' — the alias repair merges the pair into one row that
+    inherits the canonical title + IGDB match."""
+    conn, _ = _db()
+    canon = _seed(conn, title="Coffee Talk", platform="playstation 4",
+                  format="digital", source="psn_api", igdb_id=106847,
+                  provenance="psn_api:UP1234-CUSA00001_00-COFFEETALK0000")
+    alias = _seed(conn, title="CoffeeTalk", platform="playstation 4",
+                  format="digital", source="psn_receipt", order_number="o-coffee",
+                  igdb_id=None)
+    conn.commit()
+    report = apply_catalog_repairs(conn)
+    assert report.merged, "the alias must be merged"
+    rows = conn.execute("SELECT * FROM owned_games WHERE is_owned = 1").fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["title"] == "Coffee Talk"
+    assert row["normalized_title"] == "coffee talk"
+    assert row["igdb_id"] == 106847
+    assert row["id"] == canon  # the canonical (psn_api) row is the winner
+    alias_row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (alias,)).fetchone()
+    assert alias_row["is_owned"] == 0  # retired by the merge
+    conn.close()
+
+
+def test_title_alias_merges_another_fishermans_tale_into_sequel():
+    """IGDB lists 'Another Fisherman's Tale' as an alternative name for the
+    sequel — a separately-created entry merges into 'A Fisherman's Tale 2'."""
+    conn, _ = _db()
+    canon = _seed(conn, title="A Fisherman's Tale 2", platform="playstation 5",
+                  format="digital", source="psn_api", igdb_id=223344)
+    _seed(conn, title="Another Fisherman's Tale", platform="playstation 5",
+          format="digital", source="psn_receipt", order_number="o-aft")
+    report = apply_catalog_repairs(conn)
+    assert report.merged
+    rows = conn.execute("SELECT * FROM owned_games WHERE is_owned = 1").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["title"] == "A Fisherman's Tale 2"
+    assert rows[0]["igdb_id"] == 223344
+    assert rows[0]["id"] == canon
+    conn.close()
 
 
 def test_generic_split_via_psn_dump_for_unknown_ids():

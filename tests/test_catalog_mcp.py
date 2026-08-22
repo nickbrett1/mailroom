@@ -117,6 +117,31 @@ def _seed_metadata(db_path):
     conn.close()
 
 
+def test_psvr2_filter(catalog_env):
+    """is_psvr2 is a category flag (IGDB platform 390) filterable on the view —
+    PSVR2 games keep platform 'playstation 5'."""
+    import os
+
+    from mailroom.db import connect
+
+    conn = connect(f"sqlite:///{os.environ['CATALOG_DB']}")
+    conn.execute(
+        "INSERT OR REPLACE INTO game_metadata(igdb_id, payload) VALUES (?, ?)",
+        (41494, json.dumps({"id": 41494, "name": "Cyberpunk 2077",
+                            "platforms": [{"id": 167, "name": "PlayStation 5"},
+                                          {"id": 390, "name": "PlayStation VR2"}]})),
+    )
+    conn.commit()
+    conn.close()
+    srv = catalog_env
+    # flagged + filterable
+    row = srv.search_catalog("cyberpunk")[0]
+    assert row["is_psvr2"] == 1
+    assert len(srv.search_catalog("", is_psvr2=True)) == 1
+    assert len(srv.search_catalog("", is_psvr2=False)) == 2
+    assert [g["title"] for g in srv.catalog_list(is_psvr2=True)] == ["Cyberpunk 2077"]
+
+
 def test_top_rated_and_catalog_list(catalog_env):
     _seed_metadata(catalog_env.__name__ and __import__("os").environ["CATALOG_DB"])
     srv = catalog_env

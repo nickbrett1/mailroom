@@ -26,7 +26,8 @@ mcp = FastMCP(
         "Read-only PlayStation game catalog (owned games + IGDB metadata). "
         "Tools: search_catalog, get_game, catalog_stats, recently_added. "
         "ownership_class: purchased | psplus_claimed | psplus_extra. "
-        "format: digital | physical."
+        "format: digital | physical. is_psvr2: true filters to PSVR2 titles "
+        "(a category flag — PSVR2 games are still platform 'playstation 5')."
     ),
 )
 
@@ -56,6 +57,7 @@ def search_catalog(
     platform: str | None = None,
     format: str | None = None,
     ownership_class: str | None = None,
+    is_psvr2: bool | None = None,
     limit: int = 25,
 ) -> list[dict]:
     """Search owned games by title substring, with optional filters."""
@@ -65,6 +67,9 @@ def search_catalog(
         if val:
             sql += f" AND {col} = ?"
             params.append(val)
+    if is_psvr2 is not None:
+        sql += " AND is_psvr2 = ?"
+        params.append(1 if is_psvr2 else 0)
     sql += " ORDER BY title LIMIT ?"
     params.append(limit)
     conn = _conn()
@@ -86,12 +91,15 @@ def get_game(game_id: int) -> dict | None:
         conn.close()
 
 
-def _apply_filters(base: str, platform=None, format=None, ownership_class=None, genre=None) -> tuple[str, list]:
+def _apply_filters(base: str, platform=None, format=None, ownership_class=None, genre=None, is_psvr2=None) -> tuple[str, list]:
     sql, params = base, []
     for col, val in (("platform", platform), ("format", format), ("ownership_class", ownership_class)):
         if val:
             sql += f" AND {col} = ?"
             params.append(val)
+    if is_psvr2 is not None:
+        sql += " AND is_psvr2 = ?"
+        params.append(1 if is_psvr2 else 0)
     if genre:
         sql += " AND genres LIKE ?"
         params.append(f"%{genre}%")
@@ -99,9 +107,9 @@ def _apply_filters(base: str, platform=None, format=None, ownership_class=None, 
 
 
 @mcp.tool
-def top_rated(limit: int = 20, platform: str | None = None, format: str | None = None, ownership_class: str | None = None) -> list[dict]:
+def top_rated(limit: int = 20, platform: str | None = None, format: str | None = None, ownership_class: str | None = None, is_psvr2: bool | None = None) -> list[dict]:
     """The best games in the collection by IGDB rating (unrated last)."""
-    sql, params = _apply_filters("SELECT * FROM catalog_views WHERE 1=1", platform=platform, format=format, ownership_class=ownership_class)
+    sql, params = _apply_filters("SELECT * FROM catalog_views WHERE 1=1", platform=platform, format=format, ownership_class=ownership_class, is_psvr2=is_psvr2)
     conn = _conn()
     try:
         rows = conn.execute(sql + " ORDER BY rating IS NULL, rating DESC LIMIT ?", [*params, min(limit, 200)]).fetchall()
@@ -117,6 +125,7 @@ def catalog_list(
     format: str | None = None,
     ownership_class: str | None = None,
     genre: str | None = None,
+    is_psvr2: bool | None = None,
     sort: str = "title",
     limit: int = 50,
 ) -> list[dict]:
@@ -127,7 +136,7 @@ def catalog_list(
     if query:
         sql += " AND title LIKE ?"
         params.append(f"%{query}%")
-    sql, extra = _apply_filters(sql, platform=platform, format=format, ownership_class=ownership_class, genre=genre)
+    sql, extra = _apply_filters(sql, platform=platform, format=format, ownership_class=ownership_class, genre=genre, is_psvr2=is_psvr2)
     params.extend(extra)
     order = {
         "title": "title COLLATE NOCASE ASC",

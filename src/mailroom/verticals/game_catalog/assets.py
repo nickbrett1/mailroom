@@ -713,6 +713,30 @@ def _igdb_platform_matches(igdb_platforms: list[int] | None, owned_platform: str
     return bool(wanted & set(igdb_platforms))
 
 
+# IGDB platform ids used for backfilling a generic 'playstation' owned row.
+_IGDB_PS4_ID, _IGDB_PS5_ID, _IGDB_PSVR2_ID = 48, 167, 390
+
+
+def _backfill_platform(payload: dict | None) -> str | None:
+    """Concrete platform for a generic owned row from an IGDB metadata payload.
+
+    Returns 'playstation 4' when PS4 (48) is present and PS5 is not,
+    'playstation 5' when PS5 (167) is present and PS4 is not, else None
+    (ambiguous / neither — a cross-gen or non-PS game stays as-is). PSVR2
+    (390) is a PS5 headset, NOT a standalone platform, so it never sets the
+    platform — it only marks `is_psvr2` in catalog_views.
+    """
+    if not payload:
+        return None
+    ids = {p.get("id") for p in (payload.get("platforms") or []) if isinstance(p, dict)}
+    has_ps4, has_ps5 = _IGDB_PS4_ID in ids, _IGDB_PS5_ID in ids
+    if has_ps4 and not has_ps5:
+        return "playstation 4"
+    if has_ps5 and not has_ps4:
+        return "playstation 5"
+    return None
+
+
 _ROMAN_TO_ARABIC = {
     "iii": "3", "ii": "2", "iv": "4", "vi": "6", "vii": "7",
     "viii": "8", "ix": "9", "v": "5", "x": "10",
@@ -1014,9 +1038,10 @@ def catalog_quality_repairs(context: AssetExecutionContext) -> None:
     conn.close()
     context.log.info(
         f"catalog_quality_repairs: retired {len(report.retired)}, split {len(report.split)}, "
-        f"rematched {len(report.rematched)}, merged {len(report.merged)}, skipped {len(report.skipped)}"
+        f"rematched {len(report.rematched)}, merged {len(report.merged)}, cleaned {len(report.cleaned)}, "
+        f"skipped {len(report.skipped)}"
     )
-    for r in report.retired + report.split + report.rematched + report.merged:
+    for r in report.retired + report.split + report.rematched + report.merged + report.cleaned:
         context.log.info(f"  repair: {r}")
     for r in report.skipped:
         context.log.warning(f"  repair skipped (needs review): {r}")
@@ -1024,25 +1049,49 @@ def catalog_quality_repairs(context: AssetExecutionContext) -> None:
 
 @asset(deps=[dedupe_owned_games, catalog_quality_repairs], required_resource_keys={"db_url", "igdb"})
 def game_metadata(context: AssetExecutionContext) -> None:
-    """IGDB details per matched game (covers/genres/rating/release). Paced,
-    resumable (skips ids already fetched); on-demand only, not scheduled."""
+    """IGDB details per matched game (covers/genres/rating/release/platforms).
+    Paced, resumable (skips ids already fetched); on-demand only, not
+    scheduled.
+
+    Backfills a generic 'playstation' owned row to the concrete PS4/PS5 when
+    the matched IGDB entry is unambiguous, and records the platforms array so
+    catalog_views can expose `is_psvr2` (memos/game-catalog-platforms).
+    Payloads fetched before `platforms` was in the field list are refetched
+    once so the backfill + flag apply to pre-existing matched rows too.
+    """
     conn = connect(context.resources.db_url)
     init_db(conn)
     igdb = context.resources.igdb
+    # Include ids whose stored payload lacks a platforms array (never fetched,
+    # or fetched before `platforms` was requested) so the platform backfill and
+    # PSVR2 flag cover rows matched before this change.
     rows = conn.execute(
-        """SELECT DISTINCT igdb_id FROM owned_games
-           WHERE igdb_id IS NOT NULL
-             AND igdb_id NOT IN (SELECT igdb_id FROM game_metadata)"""
+        """SELECT DISTINCT g.igdb_id FROM owned_games g
+           WHERE g.igdb_id IS NOT NULL
+             AND g.igdb_id NOT IN (
+                 SELECT m.igdb_id FROM game_metadata m
+                 WHERE json_valid(m.payload)
+                   AND json_type(m.payload, '$.platforms') = 'array')"""
     ).fetchall()
     fetched = 0
     for r in rows:
-        payload = igdb.game_details(r["igdb_id"])
-        if payload:
+        gid = r["igdb_id"]
+        payload = igdb.game_details(gid)
+        if not payload:
+            continue
+        conn.execute(
+            "INSERT OR REPLACE INTO game_metadata(igdb_id, payload) VALUES (?, ?)",
+            (gid, json.dumps(payload)),
+        )
+        fetched += 1
+        plat = _backfill_platform(payload)
+        if plat:
             conn.execute(
-                "INSERT OR REPLACE INTO game_metadata(igdb_id, payload) VALUES (?, ?)",
-                (r["igdb_id"], json.dumps(payload)),
+                """UPDATE owned_games SET platform = ?, updated_at = datetime('now')
+                   WHERE igdb_id = ? AND is_owned = 1
+                     AND platform IN ('playstation', 'ps', NULL)""",
+                (plat, gid),
             )
-            fetched += 1
     conn.commit()
     conn.close()
     context.log.info(f"game_metadata: fetched {fetched}")

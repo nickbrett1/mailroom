@@ -125,6 +125,7 @@ class RepairReport:
     split: list[dict] = field(default_factory=list)
     rematched: list[dict] = field(default_factory=list)
     merged: list[dict] = field(default_factory=list)
+    cleaned: list[dict] = field(default_factory=list)
     skipped: list[dict] = field(default_factory=list)
 
 
@@ -464,9 +465,145 @@ def apply_review_merges(conn, report: RepairReport) -> None:
         report.merged.append({"id": target["id"], "title": target["title"], "source": fl["source"]})
 
 
+# --- title noise + alternative-name merges ----------------------------------
+# ' and N more items' is a marketplace listing summary a parser swallowed into
+# an item title (e.g. "Diablo IV - PlayStation 5 and 1 more item").
+_MORE_ITEMS_RE = re.compile(r"(?:\s*,?\s*and\s+\d+\s+more\s+items?)\s*$", re.IGNORECASE)
+# PlayStation Vita console models (hardware, not games) that bypassed the
+# platform gate under a console-model title (e.g. "PlayStation Vita Wi-Fi…").
+_CONSOLE_HARDWARE_RE = re.compile(
+    r"^(?:sony\s+)?playstation\s+vita\s+(?:wi-?fi(?:\s*\+?\s*3g)?|slim|pch-\w+|fat)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_catalog_title(title: str) -> str:
+    """Strip catalog-only noise from a stored title: trailing ' and N more
+    items' (a listing summary swallowed by a parser), '(Game)' catalog markers,
+    and trailing platform markers (' - PlayStation 5', '(PS4 & PS5)',
+    'PS4 & PS5'). The platform suffix is display-only — the real platform
+    lives in the `platform` column — so dropping it from the title is safe
+    and matches how the matcher already normalizes.
+    """
+    t = title.strip()
+    t = re.sub(_MORE_ITEMS_RE, "", t)
+    t = re.sub(r"\s*\(\s*(?:downloadable\s+)?(?:full\s+)?game\s*\)\s*$", "", t, flags=re.IGNORECASE)
+    # One PS platform token: 'playstation 5', 'ps4', 'playstation 4 & playstation 5'.
+    # (A lone 'ps?'+digit covers the bare 'ps4'/'p5' forms; the full word is its
+    # own alternative so 'PlayStation 5' is not mis-parsed as 'ps' + '5'.)
+    ps_token = r"(?:playstation\s*[45]|ps?\s*[45])"
+    multi = rf"{ps_token}(?:\s*[&/+]\s*{ps_token})?"
+    # trailing platform parenthetical: (PS4 & PS5) / (PS5) / (PlayStation 4)
+    t = re.sub(rf"\s*\(\s*{multi}\s*\)\s*$", "", t, flags=re.IGNORECASE)
+    # trailing ' - PlayStation 5' / ' - PS4 & PS5' / ' - PS4'
+    t = re.sub(rf"\s*[-–—]\s*{multi}\s*$", "", t, flags=re.IGNORECASE)
+    # trailing bare 'PS4 & PS5' / 'PlayStation 4'
+    t = re.sub(rf"\s+{multi}\s*$", "", t, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", t).strip(" -–—:;") if t else t
+
+
+def _apply_title_cleanup(conn, report: RepairReport) -> None:
+    """Clean catalog-only noise from stored titles (memos/game-catalog-titles):
+    strip ' and N more items' (a listing summary a parser swallowed), '(Game)'
+    markers, and trailing platform suffixes; retire Vita-console hardware rows
+    the platform gate let through under a console-model title."""
+    for r in conn.execute("SELECT * FROM owned_games WHERE is_owned = 1").fetchall():
+        title = r["title"] or ""
+        cleaned = _clean_catalog_title(title)
+        if cleaned == title:
+            continue
+        if _CONSOLE_HARDWARE_RE.search(cleaned):
+            _retire(conn, r, "not_a_game:hardware_console")
+            _audit(conn, r["id"], title, "retire_hardware_console",
+                   f"'{cleaned}' is a console (hardware), not a game")
+            report.retired.append({"id": r["id"], "title": cleaned, "reason": "hardware_console"})
+            continue
+        if cleaned:
+            conn.execute(
+                """UPDATE owned_games SET title = ?, normalized_title = ?,
+                   updated_at = datetime('now') WHERE id = ?""",
+                (cleaned, normalize_title(cleaned), r["id"]),
+            )
+            report.cleaned.append({"id": r["id"], "title": cleaned})
+
+
+# Alternative-name titles to merge into their already-owned canonical entry
+# (IGDB alternative names / PSN concatenated spellings). Keyed on the row's
+# normalized_title; the canonical row (if owned) supplies the IGDB id so the
+# dedup pass collapses the pair into one entry.
+TITLE_ALIASES = {
+    # IGDB lists 'Another Fisherman's Tale' as an alternative name for the
+    # sequel — both are the same game, so they merge into one entry.
+    "another fisherman's tale": {
+        "title": "A Fisherman's Tale 2",
+        "normalized_title": "a fisherman's tale 2",
+    },
+    # 'CoffeeTalk' is PSN's concatenated rendering of 'Coffee Talk' — merge
+    # the space-less duplicate (which carried no cover) into the real entry.
+    "coffeetalk": {
+        "title": "Coffee Talk",
+        "normalized_title": "coffee talk",
+    },
+}
+
+
+def _apply_title_aliases(conn, report: RepairReport) -> None:
+    """Merge rows whose title is just an alternative name for an already-owned
+    game into the canonical entry: adopt the canonical title + normalized_title
+    and (when the canonical row has an IGDB match) its igdb_id, then the dedup
+    pass at the end of apply_catalog_repairs collapses the pair into one row."""
+    from mailroom.verticals.game_catalog.dedup import (
+        merge_group,  # lazy: dedup imports db
+    )
+
+    for alias_norm, canon in TITLE_ALIASES.items():
+        alias_rows = conn.execute(
+            "SELECT * FROM owned_games WHERE is_owned = 1 AND normalized_title = ?",
+            (alias_norm,),
+        ).fetchall()
+        if not alias_rows:
+            continue
+        canon_row = conn.execute(
+            """SELECT * FROM owned_games WHERE is_owned = 1
+               AND normalized_title = ? ORDER BY igdb_id IS NOT NULL DESC, id LIMIT 1""",
+            (canon["normalized_title"],),
+        ).fetchone()
+        for r in alias_rows:
+            new_igdb = r["igdb_id"]
+            if canon_row and canon_row["igdb_id"]:
+                new_igdb = canon_row["igdb_id"]
+            try:
+                conn.execute(
+                    """UPDATE owned_games SET title = ?, normalized_title = ?,
+                       igdb_id = ?, updated_at = datetime('now') WHERE id = ?""",
+                    (canon["title"], canon["normalized_title"], new_igdb, r["id"]),
+                )
+            except sqlite3.IntegrityError:
+                # dedup guard: another OWNED row already has (igdb_id, platform,
+                # format) — collapse into it instead of leaving a duplicate.
+                other = conn.execute(
+                    """SELECT * FROM owned_games
+                       WHERE is_owned = 1 AND igdb_id = ? AND platform = ? AND format = ? AND id != ?""",
+                    (new_igdb, r["platform"], r["format"], r["id"]),
+                ).fetchone()
+                if other:
+                    merge_group(conn, [r, other])
+                else:
+                    raise
+            _audit(
+                conn, r["id"], canon["title"], "merge_title_alias",
+                f"'{r['title']}' is an alternative name for '{canon['title']}' — merged into the canonical entry",
+            )
+            report.merged.append({"id": r["id"], "title": canon["title"], "source": "title_alias"})
+
+
 def apply_catalog_repairs(conn) -> RepairReport:
     """Idempotent repair pass over owned_games. Safe to re-run."""
     report = RepairReport()
+
+    # 0) title noise: strip '(Game)' / platform suffixes / ' and N more items'
+    #    from stored titles and retire Vita-console hardware rows.
+    _apply_title_cleanup(conn, report)
 
     # 1) cancelled-order junk (Amazon subject fallback swallowed the tail).
     for r in conn.execute(
@@ -535,6 +672,11 @@ def apply_catalog_repairs(conn) -> RepairReport:
     # 6) game-key marketplace purchases (gameflip/woot/shopify) merged into
     # the already-owned game as provenance.
     apply_review_merges(conn, report)
+
+    # 7) alternative-name titles merged into their canonical entry
+    #    ('Another Fisherman's Tale' -> 'A Fisherman's Tale 2', 'CoffeeTalk'
+    #    -> 'Coffee Talk') so the dedup pass below collapses the pair.
+    _apply_title_aliases(conn, report)
 
     conn.commit()
     # Collapse duplicates created by the rematch (e.g. the pinned 'Unplugged'
