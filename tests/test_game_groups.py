@@ -110,6 +110,19 @@ def test_build_games_psvr2_flag_from_metadata():
     assert games[0]["normalized_title"] == "arcade paradise"  # VR is an edition of the base
 
 
+def test_init_db_idempotent_with_game_id():
+    """Re-running init_db (as concurrent assets do) must not fail on the
+    ALTER ADD COLUMN game_id migration (duplicate-column race, seen live)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    init_db(conn)  # second run = the concurrent/duplicate path
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(owned_games)").fetchall()}
+    assert "game_id" in cols
+    assert conn.execute("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='games'").fetchone()["n"] == 1
+    conn.close()
+
+
 def test_catalog_games_asset_builds_and_reparents():
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")
