@@ -350,7 +350,8 @@ def igdb_match(req: MatchRequest) -> dict:
             )
             conn.execute(
                 """INSERT INTO review_queue(source, order_number, title, reason, payload, status)
-                   VALUES ('manual_igdb_match', ?, ?, ?, ?, 'resolved')""",
+                   VALUES ('manual_igdb_match', ?, ?, ?, ?, 'resolved')
+                   ON CONFLICT(source, order_number, title, reason) DO NOTHING""",
                 (
                     str(row["order_number"] or ""),
                     row["title"],
@@ -374,7 +375,8 @@ def igdb_match(req: MatchRequest) -> dict:
         conn.execute("UPDATE owned_games SET igdb_id = ?, updated_at = datetime('now') WHERE id = ?", (req.igdb_id, req.owned_game_id))
         conn.execute(
             """INSERT INTO review_queue(source, order_number, title, reason, payload, status)
-               VALUES ('manual_igdb_match', ?, ?, ?, ?, 'resolved')""",
+               VALUES ('manual_igdb_match', ?, ?, ?, ?, 'resolved')
+               ON CONFLICT(source, order_number, title, reason) DO NOTHING""",
             (
                 str(row["order_number"] or ""),
                 row["title"],
