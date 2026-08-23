@@ -36,40 +36,46 @@ EDITION_GROUPS: dict[str, str] = {
     "arcade paradise vr": "arcade paradise",
     # Slay the Spire was both bought and PS+ claimed — same game.
     "slay the spire": "slay the spire",
+    # Dragon's Crown Pro is the PS4 version of Dragon's Crown.
+    "dragon's crown pro": "dragon's crown",
+    # Guacamelee! 2 Complete is the DLC-complete edition of Guacamelee! 2.
+    "guacamelee! 2 complete": "guacamelee! 2",
 }
 
 # Edition / bundle markers folded onto the base title. These do NOT denote a
 # different game (a Deluxe/Complete/Collection/Enhanced edition is the same
-# title), so they're stripped before grouping. Kept out: "remastered" /
-# "remake" / numbered sequels, which can be genuinely distinct titles.
+# title), so they're stripped before grouping. The `(?:...)?\s*` prefix is
+# tolerant of " - ", " : ", or no separator ("Children of Morta: Complete
+# Edition", "Aragami: Shadow Edition", "Burly Men at Sea Maestro Beard
+# Edition"). Kept out: "remastered" / "remake" / numbered sequels, which can
+# be genuinely distinct titles.
 _EDITION_MARKERS = [
-    r"\(full game and add-on content\)",
-    r"\(full game and add-ons\)",
-    r"\(full game\)",
-    r"\(ps3™/psp®/ps vita\)( \d+ mb required)?",
-    r"- digital deluxe edition",
-    r"- cross-gen deluxe bundle",
-    r"- total mayhem bundle.*",
-    r"- the collection",
-    r"- complete edition",
-    r"- enhanced edition",
-    r"- launch edition",
-    r"- championship edition",
-    r"- special edition",
-    r"- definitive edition",
-    r"- ultimate edition",
-    r"- gold edition",
-    r"- deluxe edition",
-    r"- collection",
-    r"- maestro beard edition",
-    r"- 20th anniversary edition",
-    # Episodic games are listed on PSN both as the full season and as
-    # " - Episode 1" (the entry point) — the same game, so fold them.
-    r"- episode 1",
-    r"- chapter 1",
-    r"- episode i",
-    r"- chapter i",
-    r"- edition",
+    r"\([^)]*\)",                                   # any trailing parenthetical (size / platform / "Full Game..." notes)
+    r"(?:[-–—:]?\s*)?super turbo championship edition",
+    r"(?:[-–—:]?\s*)?maestro beard edition",
+    r"(?:[-–—:]?\s*)?championship edition",
+    r"(?:[-–—:]?\s*)?shadow edition",
+    r"(?:[-–—:]?\s*)?console edition",
+    r"(?:[-–—:]?\s*)?royal edition",
+    r"(?:[-–—:]?\s*)?founders edition",
+    r"(?:[-–—:]?\s*)?complete edition",
+    r"(?:[-–—:]?\s*)?digital deluxe edition",
+    r"(?:[-–—:]?\s*)?cross-gen deluxe bundle",
+    r"(?:[-–—:]?\s*)?deluxe edition",
+    r"(?:[-–—:]?\s*)?launch edition",
+    r"(?:[-–—:]?\s*)?definitive edition",
+    r"(?:[-–—:]?\s*)?ultimate edition",
+    r"(?:[-–—:]?\s*)?gold edition",
+    r"(?:[-–—:]?\s*)?special edition",
+    r"(?:[-–—:]?\s*)?enhanced edition",
+    r"(?:[-–—:]?\s*)?the collection",
+    r"(?:[-–—:]?\s*)?new dimension",
+    r"(?:[-–—:]?\s*)?ps vita",
+    r"(?:[-–—:]?\s*)?\+\s+soca valley",   # Kayak VR: Mirage + Soča Valley (DLC)
+    r"(?:[-–—:]?\s*)?episode 1",
+    r"(?:[-–—:]?\s*)?episode i",
+    r"(?:[-–—:]?\s*)?chapter 1",
+    r"(?:[-–—:]?\s*)?chapter i",
 ]
 
 _ROMAN_TO_ARABIC = {
@@ -77,16 +83,32 @@ _ROMAN_TO_ARABIC = {
     "ix": "9", "v": "5", "x": "10",
 }
 
+# Accent folding so "Soča Valley" == "Soca Valley", "Café" == "Cafe", etc.
+_ACCENT_MAP = {
+    "č": "c", "ć": "c", "š": "s", "ž": "z", "ó": "o", "á": "a",
+    "é": "e", "í": "i", "ú": "u", "ü": "u", "ö": "o", "ñ": "n",
+}
+
 
 def _normalize_punct(s: str) -> str:
-    return (s.replace("™", "").replace("®", "").replace("’", "'")
+    out = (s.replace("™", "").replace("®", "").replace("’", "'")
              .replace("‘", "'").replace("–", "-").replace("—", "-"))
+    for ch, repl in _ACCENT_MAP.items():
+        out = out.replace(ch, repl)
+    return out
 
 
 def _strip_edition_markers(s: str) -> str:
     out = s
-    for marker in _EDITION_MARKERS:
-        out = re.sub(rf"\s*{marker}\s*$", "", out, flags=re.IGNORECASE)
+    # strip any/all trailing parenthetical groups (e.g. "(Full Game 979 MB)",
+    # "(DKO)") before AND after the edition markers so a parenthetical that
+    # sits before a marker ("Divine Knockout (DKO) - Founders Edition") is
+    # also folded.
+    for _ in range(2):
+        while re.search(r"\([^)]*\)$", out):
+            out = re.sub(r"\s*\([^)]*\)$", "", out).strip()
+        for marker in _EDITION_MARKERS:
+            out = re.sub(rf"\s*{marker}\s*$", "", out, flags=re.IGNORECASE)
     return out
 
 
@@ -100,14 +122,16 @@ def canonical_title(normalized_title: str | None) -> str:
     """Map an edition's normalized title to its canonical game key.
 
     Folds common edition/bundle markers (" - Digital Deluxe Edition", "(Full
-    Game and Add-On Content)") and roman→arabic numerals onto the base title,
-    so "Divinity: Original Sin II - Definitive Edition" and "Divinity:
-    Original Sin 2 - Definitive Edition" collapse to the same card.
+    Game and Add-On Content)"), parenthetical platform/size notes, and
+    roman→arabic numerals onto the base title, so "Divinity: Original Sin II -
+    Definitive Edition" and "Divinity: Original Sin 2 - Definitive Edition"
+    collapse to the same card. Curated EDITION_GROUPS aliases are applied on
+    the marker-stripped base.
     """
     norm = _normalize_punct((normalized_title or "").strip().lower())
     norm = re.sub(r"\s+", " ", norm).strip()
-    mapped = EDITION_GROUPS.get(norm, norm)
-    mapped = _strip_edition_markers(mapped)
+    mapped = _strip_edition_markers(norm)
+    mapped = EDITION_GROUPS.get(mapped, mapped)
     mapped = _roman_to_arabic(mapped)
     return re.sub(r"\s+", " ", mapped).strip()
 

@@ -157,6 +157,57 @@ def test_build_groups_edition_suffix_and_roman_numeral():
     assert games[0]["num_editions"] == 2
 
 
+def test_build_groups_more_edition_variants():
+    """Edition aliases the suffix/marker normalizer folds: Shadow/Complete/
+    Console/Royal/Founders/Championship/Maestro Beard/New Dimension editions,
+    parenthetical platform+size notes, and curated aliases (Dragon's Crown Pro,
+    Guacamelee! 2 Complete, Kayak VR + Soča Valley)."""
+    rows = [
+        {"id": 1, "title": "Aragami", "normalized_title": "aragami", "platform": "playstation 4",
+         "format": "digital", "ownership_class": "purchased", "igdb_id": 18853, "provenance": "psn_api:a"},
+        {"id": 2, "title": "Aragami: Shadow Edition (Full Game and Add-On Content)",
+         "normalized_title": "aragami: shadow edition (full game and add-on content)",
+         "platform": "playstation 4", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 100437, "provenance": "psn_api:b"},
+        {"id": 3, "title": "Burly Men at Sea Maestro Beard Edition",
+         "normalized_title": "burly men at sea maestro beard edition", "platform": "playstation 4",
+         "format": "digital", "ownership_class": "purchased", "igdb_id": 52672, "provenance": "psn_api:c"},
+        {"id": 4, "title": "Burly Men At Sea", "normalized_title": "burly men at sea",
+         "platform": "playstation 4", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 24501, "provenance": "psn_api:d"},
+        {"id": 5, "title": "Children of Morta: Complete Edition",
+         "normalized_title": "children of morta: complete edition", "platform": "playstation 4",
+         "format": "digital", "ownership_class": "purchased", "igdb_id": 175878, "provenance": "psn_api:e"},
+        {"id": 6, "title": "Children of Morta", "normalized_title": "children of morta",
+         "platform": "playstation 4", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 36198, "provenance": "psn_api:f"},
+        {"id": 7, "title": "Dragon's Crown Pro", "normalized_title": "dragon's crown pro",
+         "platform": "playstation 4", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 68283, "provenance": "psn_api:g"},
+        {"id": 8, "title": "Dragon's Crown™ (Full Game 979 MB)",
+         "normalized_title": "dragon's crown™ (full game 979 mb)", "platform": "playstation",
+         "format": "digital", "ownership_class": "purchased", "igdb_id": 3002, "provenance": "psn_api:h"},
+        {"id": 9, "title": "Kayak VR: Mirage + Soča Valley",
+         "normalized_title": "kayak vr: mirage + soča valley", "platform": "playstation",
+         "format": "digital", "ownership_class": "purchased", "igdb_id": 305363, "provenance": "psn_api:i"},
+        {"id": 10, "title": "Kayak VR: Mirage", "normalized_title": "kayak vr: mirage",
+         "platform": "playstation 5", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 157244, "provenance": "psn_api:j"},
+    ]
+    games, _ = build_games(rows)
+    by_norm = {g["normalized_title"]: g for g in games}
+    # Aragami (shadow edition) -> 1 card, 2 editions
+    assert by_norm["aragami"]["num_editions"] == 2
+    # Burly Men At Sea -> 1 card, 2 editions
+    assert by_norm["burly men at sea"]["num_editions"] == 2
+    # Children of Morta -> 1 card, 2 editions
+    assert by_norm["children of morta"]["num_editions"] == 2
+    # Dragon's Crown (Pro + original) -> 1 card, 2 editions
+    assert by_norm["dragon's crown"]["num_editions"] == 2
+    # Kayak VR: Mirage (+ Soča Valley) -> 1 card, 2 editions
+    assert by_norm["kayak vr: mirage"]["num_editions"] == 2
+
+
 def test_init_db_idempotent_with_game_id():
     """Re-running init_db (as concurrent assets do) must not fail on the
     ALTER ADD COLUMN game_id migration (duplicate-column race, seen live)."""
