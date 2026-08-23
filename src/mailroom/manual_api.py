@@ -11,7 +11,7 @@ Endpoints:
   GET  /manual/needs-match           -> owned games without an igdb_id
   POST /manual/igdb-match            -> {owned_game_id, igdb_id, note?} apply a match
   POST /manual/needs-match/exclude   -> {owned_game_id, reason?} retire a non-game from the catalog
-  POST /manual/owned-game/rename      -> {owned_game_id, title} clean a raw listing title
+  POST /manual/owned-game/rename      -> {owned_game_id, title, platform?} clean a raw listing title / override platform
   GET  /manual/review-queue          -> open (or all) dedup/manual review flags
   POST /manual/review-queue/{id}/resolve -> {decision, note?} adjudicate a flag
   POST /manual/psn-credential        -> {npsso} exchange -> store refresh token + session
@@ -99,9 +99,12 @@ class ExcludeRequest(BaseModel):
 class RenameRequest(BaseModel):
     """Clean a raw listing title (eBay "SEALED ... w/ ...", bundle wording)
     to the canonical game title. Updates the owned row's title + normalized
-    title; catalog_games picks up the new name on its next materialization."""
+    title; catalog_games picks up the new name on its next materialization.
+    Optionally overrides `platform` (e.g. 'ps vita' for a "PS Vita" title that
+    was stored as a generic 'playstation')."""
     owned_game_id: int
     title: str
+    platform: str | None = None
 
 
 def _conn():
@@ -468,6 +471,11 @@ def rename_owned_game(req: RenameRequest) -> dict:
         ).fetchone()
         if not row:
             raise HTTPException(404, f"no owned game with id {req.owned_game_id}")
+        if req.platform:
+            conn.execute(
+                "UPDATE owned_games SET platform = ? WHERE id = ?",
+                (req.platform.strip().lower(), req.owned_game_id),
+            )
         conn.execute(
             """UPDATE owned_games SET title = ?, normalized_title = ?,
                updated_at = datetime('now') WHERE id = ?""",

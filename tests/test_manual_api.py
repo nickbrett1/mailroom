@@ -198,6 +198,17 @@ def test_rename_unknown_404_and_blank_400(client):
     assert client.post("/manual/owned-game/rename", json={"owned_game_id": gid, "title": "  "}).status_code == 400
 
 
+def test_rename_can_override_platform(client):
+    """The rename endpoint can also correct a stored platform (e.g. Vita)."""
+    gid = client.get("/manual/needs-match").json()[0]["owned_game_id"]
+    res = client.post("/manual/owned-game/rename", json={"owned_game_id": gid, "title": "Rayman Origins", "platform": "ps vita"})
+    assert res.status_code == 200
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    row = conn.execute("SELECT platform FROM owned_games WHERE id = ?", (gid,)).fetchone()
+    assert row["platform"] == "ps vita"
+    conn.close()
+
+
 def test_exclude_unknown_and_already_retired(client):
     assert client.post("/manual/needs-match/exclude", json={"owned_game_id": 9999}).status_code == 404
     game_id = client.get("/manual/needs-match").json()[0]["owned_game_id"]
