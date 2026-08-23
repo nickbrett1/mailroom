@@ -240,6 +240,8 @@ def test_build_groups_more_edition_variants_2():
     # Synth Riders + 80s Mixtape DLC bundle folds onto the base game
     assert canonical_title("synth riders + 80s mixtape - side a") == "synth riders"
     assert canonical_title("synth riders + 80s mixtape side b") == "synth riders"
+    # Agents of Mayhem - Total Mayhem Bundle folds onto the base
+    assert canonical_title("agents of mayhem - total mayhem bundle (full game and add-on content)") == "agents of mayhem"
 
 
 def test_init_db_idempotent_with_game_id():

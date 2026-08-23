@@ -76,6 +76,7 @@ _EDITION_MARKERS = [
     r"(?:[-–—:]?\s*)?platinum edition",
     r"(?:[-–—:]?\s*)?jumbo edition",
     r"(?:[-–—:]?\s*)?rivals bundle",
+    r"(?:[-–—:]?\s*)?total mayhem bundle",
     r"(?:[-–—:]?\s*)?chicken edition",
     r"(?:[-–—:]?\s*)?mormo's curse",
     r"(?:[-–—:]?\s*)?special edition bundle",
