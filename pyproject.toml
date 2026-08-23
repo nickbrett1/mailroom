@@ -16,7 +16,7 @@ dependencies = [
 dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.3",
-    "fastmcp>=3.0",  # catalog_mcp server tests (separate container at deploy)
+    "fastmcp>=3.4.7",  # catalog_mcp server tests (separate container at deploy)
 ]
 
 [build-system]
