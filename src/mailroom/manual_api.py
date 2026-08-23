@@ -10,6 +10,7 @@ PSN credential / web-session stores for the playtime sync.
 Endpoints:
   GET  /manual/needs-match           -> owned games without an igdb_id
   POST /manual/igdb-match            -> {owned_game_id, igdb_id, note?} apply a match
+  POST /manual/needs-match/exclude   -> {owned_game_id, reason?} retire a non-game from the catalog
   GET  /manual/review-queue          -> open (or all) dedup/manual review flags
   POST /manual/review-queue/{id}/resolve -> {decision, note?} adjudicate a flag
   POST /manual/psn-credential        -> {npsso} exchange -> store refresh token + session
@@ -81,6 +82,17 @@ class KnownOrderItemRequest(BaseModel):
     price: str | None = None
     acquisition_date: str | None = None
     note: str | None = None
+
+
+class ExcludeRequest(BaseModel):
+    """Mark an owned game as excluded (a non-game) so it leaves the catalog.
+
+    Owned games that slipped past the classifier but aren't really in the
+    library — an artbook, a beta, or a reseller-listing mis-parse — shouldn't
+    be matched to IGDB or shown in the catalog. Exclusion retires the row
+    (is_owned=0, never deleted) and is audited to review_queue."""
+    owned_game_id: int
+    reason: str | None = None
 
 
 def _conn():
@@ -372,6 +384,53 @@ def igdb_match(req: MatchRequest) -> dict:
         )
         conn.commit()
         return {"owned_game_id": req.owned_game_id, "igdb_id": req.igdb_id, "applied": True}
+    finally:
+        conn.close()
+
+
+@app.post("/manual/needs-match/exclude")
+def exclude_needs_match(req: ExcludeRequest) -> dict:
+    """Mark an owned game as excluded (a non-game) so it leaves the catalog.
+
+    Some owned rows are not games — an artbook, a beta, a hardware add-on, or
+    a mis-parsed reseller listing. They'd otherwise sit forever in the
+    needs-match list and clutter the catalog. Exclusion retires the row
+    (is_owned=0, retire_reason='excluded:...', never deleted) and audits the
+    decision to review_queue so it's reversible/auditable.
+    """
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM owned_games WHERE id = ?", (req.owned_game_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, f"no owned game with id {req.owned_game_id}")
+        if row["is_owned"] != 1:
+            raise HTTPException(409, f"owned game {req.owned_game_id} is already retired/excluded")
+        reason = (req.reason or "").strip()
+        retire_reason = f"excluded:{reason}" if reason else "excluded:not_a_game"
+        conn.execute(
+            """UPDATE owned_games SET is_owned = 0, status = 'retired',
+               retire_reason = ?, updated_at = datetime('now') WHERE id = ?""",
+            (retire_reason, req.owned_game_id),
+        )
+        conn.execute(
+            """INSERT INTO review_queue(source, order_number, title, reason, payload, status)
+               VALUES ('manual_exclude', ?, ?, ?, ?, 'resolved')""",
+            (
+                str(row["order_number"] or ""),
+                row["title"],
+                f"excluded from catalog ({retire_reason})",
+                req.reason or "not a game",
+            ),
+        )
+        conn.commit()
+        return {
+            "owned_game_id": req.owned_game_id,
+            "title": row["title"],
+            "excluded": True,
+            "retire_reason": retire_reason,
+        }
     finally:
         conn.close()
 
