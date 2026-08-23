@@ -56,6 +56,7 @@ _EDITION_MARKERS = [
     r"(?:[-–—:]?\s*)?championship edition",
     r"(?:[-–—:]?\s*)?shadow edition",
     r"(?:[-–—:]?\s*)?console edition",
+    r"(?:[-–—:]?\s*)?reloaded edition",
     r"(?:[-–—:]?\s*)?royal edition",
     r"(?:[-–—:]?\s*)?founders edition",
     r"(?:[-–—:]?\s*)?complete edition",
