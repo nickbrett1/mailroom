@@ -237,6 +237,9 @@ def test_build_groups_more_edition_variants_2():
     # distinct titles must NOT fold together
     assert canonical_title("metroid prime") != canonical_title("metroid prime remastered")
     assert canonical_title("rayman legends") != canonical_title("rayman origins")
+    # Synth Riders + 80s Mixtape DLC bundle folds onto the base game
+    assert canonical_title("synth riders + 80s mixtape - side a") == "synth riders"
+    assert canonical_title("synth riders + 80s mixtape side b") == "synth riders"
 
 
 def test_init_db_idempotent_with_game_id():

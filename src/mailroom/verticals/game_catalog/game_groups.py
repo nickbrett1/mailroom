@@ -45,6 +45,11 @@ EDITION_GROUPS: dict[str, str] = {
     "subnautica: below zero": "subnautica below zero",
     # Valkyria Chronicles Remastered is the PS4 version of Valkyria Chronicles.
     "valkyria chronicles remastered": "valkyria chronicles",
+    # Synth Riders + its "80s Mixtape" DLC bundle is the same game.
+    "synth riders + 80s mixtape - side a": "synth riders",
+    "synth riders + 80s mixtape side a": "synth riders",
+    "synth riders + 80s mixtape - side b": "synth riders",
+    "synth riders + 80s mixtape side b": "synth riders",
 }
 
 # Edition / bundle markers folded onto the base title. These do NOT denote a
