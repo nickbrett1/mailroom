@@ -12,7 +12,7 @@
 
 - mailroom:
     icon: sh-docker
-    href: http://nas:3003/
+    href: http://<hostname>:3003/
     description: mailroom container
     widget:
       type: customapi
