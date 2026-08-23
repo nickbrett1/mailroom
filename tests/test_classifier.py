@@ -7,6 +7,18 @@ def test_retail_suffix_ps5_game():
     assert "playstation 5" in (c.platform or "").lower()
 
 
+def test_vita_identified_as_platform():
+    """'PS Vita' in the title (no '- PS Vita' separator) is a Vita platform."""
+    c = classify_item("Rayman® Origins PS Vita (Full Game 932 MB)")
+    assert c.classification == "playstation_game"
+    assert c.platform == "ps vita"
+    # '- PS Vita' and 'psvita' normalize the same way
+    assert classify_item("Title - PS Vita").platform == "ps vita"
+    assert classify_item("Title for PSVita").platform == "ps vita"
+    # a plain 'vita' in a name is not a platform
+    assert classify_item("Vita Nova").classification != "playstation_game"
+
+
 def test_gamefly_ps5_parenthetical():
     c = classify_item("Atomfall (PS5)")
     assert c.classification == "playstation_game"

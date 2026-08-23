@@ -41,6 +41,20 @@ class Classification:
     reason: str | None = None
 
 
+def _norm_platform(p: str | None) -> str | None:
+    """Normalize a detected platform token to the canonical stored value."""
+    if not p:
+        return p
+    p = p.strip().lower()
+    return {
+        "ps4": "playstation 4",
+        "ps5": "playstation 5",
+        "ps3": "playstation 3",
+        "psvita": "ps vita",
+        "vita": "ps vita",
+    }.get(p, p)
+
+
 def classify_item(title: str, platform_hint: str | None = None, variant: str | None = None) -> Classification:
     """Classify a line item via the platform gate.
 
@@ -73,9 +87,14 @@ def classify_item(title: str, platform_hint: str | None = None, variant: str | N
     if variant and variant.strip().upper() in {"PS4", "PS5", "PSVITA", "PS3", "VITA"}:
         return Classification("playstation_game", platform=variant.strip().upper(), reason="Shopify variant")
     if ps_match:
-        return Classification("playstation_game", platform=ps_match.group(1), reason="platform match")
+        return Classification("playstation_game", platform=_norm_platform(ps_match.group(1)), reason="platform match")
     if paren_match:
         return Classification("playstation_game", platform=f"playstation {paren_match.group(1)}", reason="parenthetical platform")
+    # 'PS Vita' as a bare platform in the title — PSN lists it as
+    # "Title PS Vita (Full Game N MB)" with no '- PS Vita' / 'for PS Vita'
+    # separator, so it needs its own word-boundary check.
+    if re.search(r"\b(?:ps\s*vita|psvita)\b", text):
+        return Classification("playstation_game", platform="ps vita", reason="vita platform")
     # Word-boundary PS4/PS5 so 'MPS4' (a Master Plunger SKU, not a platform)
     # can't classify a plunger as a PlayStation game. 'playstation' is kept
     # as a bare substring — no real word embeds it.
