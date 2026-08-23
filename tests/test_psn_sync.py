@@ -408,6 +408,47 @@ def test_psn_playtime_asset_upserts_stats_and_view_shows_hours():
     conn.close()
 
 
+def test_catalog_views_not_duplicated_by_multiple_trophy_sets():
+    """A game with several game_stats rows (multiple regions/SKUs sharing a
+    normalized title) must still produce ONE catalog_views row — the view's
+    game_stats join is 1:1 per title."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    from mailroom.db import upsert_owned_game
+
+    upsert_owned_game(
+        conn,
+        {
+            "title": "Rayman Legends", "normalized_title": "rayman legends",
+            "platform": "playstation 4", "format": "digital",
+            "ownership_class": "purchased", "retailer": None,
+            "order_number": None, "item_id": None, "condition": None,
+            "psn_content_id": "UP0001-CUSA00069_00-RAYMANLEGENDS001",
+            "igdb_id": 1968, "acquisition_date": None, "price": None,
+            "source": "psn_api", "source_ref": "UP0001-CUSA00069_00-RAYMANLEGENDS001",
+            "status": "owned", "is_owned": 1,
+            "provenance": "psn_api:UP0001-CUSA00069_00-RAYMANLEGENDS001",
+        },
+    )
+    conn.execute(
+        """INSERT INTO game_stats(trophy_title_id, title, normalized_title,
+           playtime_minutes, trophies_earned, trophies_defined, progress)
+           VALUES ('NPWR11111_00', 'Rayman Legends', 'rayman legends', 60, 10, 20, 50)"""
+    )
+    conn.execute(
+        """INSERT INTO game_stats(trophy_title_id, title, normalized_title,
+           playtime_minutes, trophies_earned, trophies_defined, progress)
+           VALUES ('NPWR22222_00', 'Rayman Legends', 'rayman legends', 30, 5, 20, 25)"""
+    )
+    conn.commit()
+
+    rows = conn.execute("SELECT title FROM catalog_views").fetchall()
+    assert len(rows) == 1, f"expected 1 row, got {len(rows)}"
+    assert rows[0]["title"] == "Rayman Legends"
+    conn.close()
+
+
 def test_psn_playtime_falls_back_to_trophies_without_session():
     """No psn_web_session credential -> playtime skipped, trophy stats still land."""
     db = tempfile.mktemp(suffix=".db")
