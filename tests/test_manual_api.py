@@ -172,6 +172,32 @@ def test_exclude_removes_from_needs_match(client):
     conn.close()
 
 
+def test_rename_owned_game_updates_title(client):
+    """Cleaning a raw listing title updates the owned row title + normalized."""
+    from mailroom.db import connect
+
+    game_id = client.get("/manual/needs-match").json()[0]["owned_game_id"]
+    res = client.post("/manual/owned-game/rename", json={"owned_game_id": game_id, "title": "Wildermyth"})
+    assert res.status_code == 200
+    assert res.json()["renamed"] is True
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    row = conn.execute("SELECT title, normalized_title FROM owned_games WHERE id = ?", (game_id,)).fetchone()
+    assert row["title"] == "Wildermyth"
+    assert row["normalized_title"] == "wildermyth"
+    conn.close()
+    # audit recorded
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    audit = conn.execute("SELECT source, status FROM review_queue WHERE source = 'manual_rename'").fetchone()
+    assert audit is not None and audit["status"] == "resolved"
+    conn.close()
+
+
+def test_rename_unknown_404_and_blank_400(client):
+    assert client.post("/manual/owned-game/rename", json={"owned_game_id": 9999, "title": "X"}).status_code == 404
+    gid = client.get("/manual/needs-match").json()[0]["owned_game_id"]
+    assert client.post("/manual/owned-game/rename", json={"owned_game_id": gid, "title": "  "}).status_code == 400
+
+
 def test_exclude_unknown_and_already_retired(client):
     assert client.post("/manual/needs-match/exclude", json={"owned_game_id": 9999}).status_code == 404
     game_id = client.get("/manual/needs-match").json()[0]["owned_game_id"]

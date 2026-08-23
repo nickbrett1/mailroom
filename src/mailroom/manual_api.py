@@ -11,6 +11,7 @@ Endpoints:
   GET  /manual/needs-match           -> owned games without an igdb_id
   POST /manual/igdb-match            -> {owned_game_id, igdb_id, note?} apply a match
   POST /manual/needs-match/exclude   -> {owned_game_id, reason?} retire a non-game from the catalog
+  POST /manual/owned-game/rename      -> {owned_game_id, title} clean a raw listing title
   GET  /manual/review-queue          -> open (or all) dedup/manual review flags
   POST /manual/review-queue/{id}/resolve -> {decision, note?} adjudicate a flag
   POST /manual/psn-credential        -> {npsso} exchange -> store refresh token + session
@@ -93,6 +94,14 @@ class ExcludeRequest(BaseModel):
     (is_owned=0, never deleted) and is audited to review_queue."""
     owned_game_id: int
     reason: str | None = None
+
+
+class RenameRequest(BaseModel):
+    """Clean a raw listing title (eBay "SEALED ... w/ ...", bundle wording)
+    to the canonical game title. Updates the owned row's title + normalized
+    title; catalog_games picks up the new name on its next materialization."""
+    owned_game_id: int
+    title: str
 
 
 def _conn():
@@ -433,6 +442,50 @@ def exclude_needs_match(req: ExcludeRequest) -> dict:
             "excluded": True,
             "retire_reason": retire_reason,
         }
+    finally:
+        conn.close()
+
+
+@app.post("/manual/owned-game/rename")
+def rename_owned_game(req: RenameRequest) -> dict:
+    """Clean a raw listing title to the canonical game title.
+
+    eBay / bundle listings carry listing wording ('SEALED Wildermyth for Sony
+    PlayStation 5 (PS5) w/ Monster Compendium', 'Metro Awakening + Arizona
+    Sunshine 2') that should not be the catalog card name. Updates the owned
+    row's title + normalized_title; catalog_games uses the new name on its
+    next materialization. Audited to review_queue.
+    """
+    from mailroom.verticals.game_catalog.parsers.psn import normalize_title
+
+    title = (req.title or "").strip()
+    if not title:
+        raise HTTPException(400, "title is required")
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM owned_games WHERE id = ?", (req.owned_game_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, f"no owned game with id {req.owned_game_id}")
+        conn.execute(
+            """UPDATE owned_games SET title = ?, normalized_title = ?,
+               updated_at = datetime('now') WHERE id = ?""",
+            (title, normalize_title(title), req.owned_game_id),
+        )
+        conn.execute(
+            """INSERT INTO review_queue(source, order_number, title, reason, payload, status)
+               VALUES ('manual_rename', ?, ?, ?, ?, 'resolved')
+               ON CONFLICT(source, order_number, title, reason) DO NOTHING""",
+            (
+                str(row["order_number"] or ""),
+                row["title"],
+                f"renamed to '{title}'",
+                json.dumps({"new_title": title}),
+            ),
+        )
+        conn.commit()
+        return {"owned_game_id": req.owned_game_id, "title": title, "renamed": True}
     finally:
         conn.close()
 
