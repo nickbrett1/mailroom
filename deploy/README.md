@@ -89,7 +89,7 @@ enable the `homepage` Docker provider) to show a health widget for the service.
 ## 7. Data mounts
 
 Configure `dataMounts` in the genproj configuration to mount host directories
-into the container, e.g. `[{ "hostPath": "/volume1/marketdata", "containerPath": "/data", "readOnly": true }]`.
+into the container, e.g. `[{ "hostPath": "<DATA_DIR>", "containerPath": "/data", "readOnly": true }]`.
 They are emitted into the compose `volumes:` section (read-only by default).
 
 ## 8. Healthchecks, env vars and system packages

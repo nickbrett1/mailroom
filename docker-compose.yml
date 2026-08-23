@@ -16,7 +16,7 @@ services:
     ports:
       - "3003:3003"
     volumes:
-      - /volume1/docker/mailroom/data:/data
+      - ${DATA_DIR}:/data
     environment:
       # Set your environment variables here or in a NAS-side .env file
       # (genproj never commits secrets). See .env.example.
@@ -33,7 +33,7 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
       - "homepage.group=Services"
       - "homepage.name=mailroom"
-      - "homepage.href=http://nas:3003/"
+      - "homepage.href=http://<hostname>:3003/"
       - "homepage.widget.type=customapi"
       - "homepage.widget.url=http://localhost:3003/server_info"
 
@@ -47,7 +47,7 @@ services:
     ports:
       - "3004:3004"
     volumes:
-      - /volume1/docker/mailroom/data:/data
+      - ${DATA_DIR}:/data
     environment:
       MAILROOM_DB_URL: ${MAILROOM_DB_URL:-sqlite:////data/mailroom.db}
       PSN_CLIENT_ID: ${PSN_CLIENT_ID}
@@ -63,7 +63,7 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
       - "homepage.group=Services"
       - "homepage.name=mailroom-manual"
-      - "homepage.href=http://nas:3004/health"
+      - "homepage.href=http://<hostname>:3004/health"
 
   # Dagster MCP (read-only) — runs/logs/assets/schedules for agents + goose
   # debugging. Published to GHCR by CI; streamable HTTP on 8770.
@@ -83,7 +83,7 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
       - "homepage.group=Services"
       - "homepage.name=dagster-mcp"
-      - "homepage.href=http://nas:8770/"
+      - "homepage.href=http://<hostname>:8770/"
 
   # Read-only catalog MCP (FastMCP over the shared catalog_views store).
   # Published to GHCR by CI (ghcr.io/nickbrett1/catalog-mcp). The data volume
@@ -96,7 +96,7 @@ services:
     ports:
       - "8766:8766"
     volumes:
-      - /volume1/docker/mailroom/data:/data
+      - ${DATA_DIR}:/data
     environment:
       CATALOG_DB: ${CATALOG_DB:-/data/mailroom.db}
       CATALOG_PORT: ${CATALOG_PORT:-8766}
@@ -104,4 +104,4 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
       - "homepage.group=Services"
       - "homepage.name=catalog-mcp"
-      - "homepage.href=http://nas:8766/"
+      - "homepage.href=http://<hostname>:8766/"
