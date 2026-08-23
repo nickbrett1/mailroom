@@ -63,6 +63,12 @@ _EDITION_MARKERS = [
     r"- collection",
     r"- maestro beard edition",
     r"- 20th anniversary edition",
+    # Episodic games are listed on PSN both as the full season and as
+    # " - Episode 1" (the entry point) — the same game, so fold them.
+    r"- episode 1",
+    r"- chapter 1",
+    r"- episode i",
+    r"- chapter i",
     r"- edition",
 ]
 
