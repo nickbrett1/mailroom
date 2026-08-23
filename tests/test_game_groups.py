@@ -143,6 +143,8 @@ def test_build_groups_edition_suffix_and_roman_numeral():
     # episodic entry-point listing folds onto the full season
     assert canonical_title("batman: the enemy within - episode 1") == "batman: the enemy within"
     assert canonical_title("life is strange 2 - episode 1") == "life is strange 2"
+    # reloaded edition folds onto the base
+    assert canonical_title("mercenary kings: reloaded edition") == "mercenary kings"
     # same card for different-igdb editions of the same title
     rows = [
         {"id": 1, "title": "Cities: VR", "normalized_title": "cities: vr",
