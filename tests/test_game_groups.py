@@ -110,6 +110,50 @@ def test_build_games_psvr2_flag_from_metadata():
     assert games[0]["normalized_title"] == "arcade paradise"  # VR is an edition of the base
 
 
+def test_build_groups_same_igdb_different_titles_and_formats():
+    """Two editions of Divinity: OS2 (PS5 digital + PS physical) share the same
+    igdb_id (103337) but different titles/formats/platforms — they must fold
+    into ONE card with 2 editions."""
+    rows = [
+        {"id": 1, "title": "Divinity: Original Sin 2 - Definitive Edition",
+         "normalized_title": "divinity: original sin 2 - definitive edition",
+         "platform": "playstation 5", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 103337, "provenance": "psn_api:cid-div2", "acquisition_date": "2025-12-15"},
+        {"id": 2, "title": "Divinity: Original Sin II - Definitive Edition",
+         "normalized_title": "divinity: original sin ii - definitive edition",
+         "platform": "playstation", "format": "physical", "ownership_class": "purchased",
+         "igdb_id": 103337, "provenance": "gamestop:1100000042691133", "acquisition_date": "2021-12-27"},
+    ]
+    games, _ = build_games(rows)
+    assert len(games) == 1
+    g = games[0]
+    assert g["igdb_id"] == 103337
+    assert g["num_editions"] == 2
+    assert g["formats"] == "digital, physical"
+    assert g["earliest_acquisition"] == "2021-12-27"
+
+
+def test_build_groups_edition_suffix_and_roman_numeral():
+    """Deus Ex base + 'Digital Deluxe Edition' collapse via suffix stripping,
+    and a roman-numeral variant maps onto its arabic counterpart."""
+    # suffix stripping: same base, different edition
+    assert canonical_title("deus ex: mankind divided - digital deluxe edition") == "deus ex: mankind divided"
+    # roman -> arabic
+    assert canonical_title("divinity: original sin ii - definitive edition") == "divinity: original sin 2"
+    # same card for different-igdb editions of the same title
+    rows = [
+        {"id": 1, "title": "Cities: VR", "normalized_title": "cities: vr",
+         "platform": "playstation 5", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 185895, "provenance": "psn_api:cvr"},
+        {"id": 2, "title": "Cities: VR - Enhanced Edition", "normalized_title": "cities: vr - enhanced edition",
+         "platform": "playstation", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 225958, "provenance": "psn_api:cvr-ee"},
+    ]
+    games, _ = build_games(rows)
+    assert len(games) == 1
+    assert games[0]["num_editions"] == 2
+
+
 def test_init_db_idempotent_with_game_id():
     """Re-running init_db (as concurrent assets do) must not fail on the
     ALTER ADD COLUMN game_id migration (duplicate-column race, seen live)."""

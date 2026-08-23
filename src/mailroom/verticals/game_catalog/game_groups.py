@@ -16,12 +16,17 @@ Spire" bought AND PS+ claimed, or a game on PS4 + PS5, collapse to one card).
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
 # Edition title -> canonical title (normalized). Extend as new edition
-# variants are found. Keyed on owned_games.normalized_title.
+# variants are found. Keyed on owned_games.normalized_title. The suffix /
+# numeral normalizers in canonical_title() below also fold common edition and
+# bundle markers (e.g. " - Digital Deluxe Edition", " (Full Game and Add-On
+# Content)") onto the base title, so these exact entries are only needed for
+# special cases the generic rules can't express.
 EDITION_GROUPS: dict[str, str] = {
     # Alien Isolation: "The Collection" is the same game as the base release.
     "alien isolation - the collection": "alien isolation",
@@ -33,6 +38,73 @@ EDITION_GROUPS: dict[str, str] = {
     "slay the spire": "slay the spire",
 }
 
+# Edition / bundle markers folded onto the base title. These do NOT denote a
+# different game (a Deluxe/Complete/Collection/Enhanced edition is the same
+# title), so they're stripped before grouping. Kept out: "remastered" /
+# "remake" / numbered sequels, which can be genuinely distinct titles.
+_EDITION_MARKERS = [
+    r"\(full game and add-on content\)",
+    r"\(full game and add-ons\)",
+    r"\(full game\)",
+    r"\(ps3™/psp®/ps vita\)( \d+ mb required)?",
+    r"- digital deluxe edition",
+    r"- cross-gen deluxe bundle",
+    r"- total mayhem bundle.*",
+    r"- the collection",
+    r"- complete edition",
+    r"- enhanced edition",
+    r"- launch edition",
+    r"- championship edition",
+    r"- special edition",
+    r"- definitive edition",
+    r"- ultimate edition",
+    r"- gold edition",
+    r"- deluxe edition",
+    r"- collection",
+    r"- maestro beard edition",
+    r"- 20th anniversary edition",
+    r"- edition",
+]
+
+_ROMAN_TO_ARABIC = {
+    "iii": "3", "ii": "2", "iv": "4", "vi": "6", "vii": "7",
+    "ix": "9", "v": "5", "x": "10",
+}
+
+
+def _normalize_punct(s: str) -> str:
+    return (s.replace("™", "").replace("®", "").replace("’", "'")
+             .replace("‘", "'").replace("–", "-").replace("—", "-"))
+
+
+def _strip_edition_markers(s: str) -> str:
+    out = s
+    for marker in _EDITION_MARKERS:
+        out = re.sub(rf"\s*{marker}\s*$", "", out, flags=re.IGNORECASE)
+    return out
+
+
+def _roman_to_arabic(s: str) -> str:
+    for rom, arabic in sorted(_ROMAN_TO_ARABIC.items(), key=lambda kv: -len(kv[0])):
+        s = re.sub(rf"\b{rom}\b", arabic, s)
+    return s
+
+
+def canonical_title(normalized_title: str | None) -> str:
+    """Map an edition's normalized title to its canonical game key.
+
+    Folds common edition/bundle markers (" - Digital Deluxe Edition", "(Full
+    Game and Add-On Content)") and roman→arabic numerals onto the base title,
+    so "Divinity: Original Sin II - Definitive Edition" and "Divinity:
+    Original Sin 2 - Definitive Edition" collapse to the same card.
+    """
+    norm = _normalize_punct((normalized_title or "").strip().lower())
+    norm = re.sub(r"\s+", " ", norm).strip()
+    mapped = EDITION_GROUPS.get(norm, norm)
+    mapped = _strip_edition_markers(mapped)
+    mapped = _roman_to_arabic(mapped)
+    return re.sub(r"\s+", " ", mapped).strip()
+
 # Platforms with no real signal (generic receipt/PSN rows) — collapse to a
 # single display platform when that's all a game has.
 _GENERIC_PLATFORMS = {None, "", "playstation", "ps"}
@@ -43,12 +115,6 @@ class GamesReport:
     games: int = 0
     reparented: int = 0
     groups: list[dict] = field(default_factory=list)  # {key, title, editions, igdb_id}
-
-
-def canonical_title(normalized_title: str | None) -> str:
-    """Map an edition's normalized title to its canonical game key."""
-    norm = (normalized_title or "").strip().lower()
-    return EDITION_GROUPS.get(norm, norm)
 
 
 def _base_member(members: list[dict[str, Any]]) -> dict[str, Any]:
@@ -100,10 +166,29 @@ def build_games(
     for r in owned_rows:
         buckets[canonical_title(r.get("normalized_title"))].append(dict(r))
 
-    games: list[dict[str, Any]] = []
+    # Merge buckets that share an IGDB id: two editions of the same game that
+    # normalize to different titles (e.g. "Divinity: Original Sin II - Definitive
+    # Edition" on PS5 digital and "Divinity: Original Sin 2 - Definitive Edition"
+    # on PS physical) are the SAME logical game by igdb_id, so they fold into one
+    # card even when the title rules don't line up. idempotent and safe — a shared
+    # igdb_id is the definition of one game in the catalog model.
+    merged: list[list[dict[str, Any]]] = []
+    igdb_owner: dict[int, int] = {}
     for key in sorted(buckets):
         members = buckets[key]
+        gids = {m["igdb_id"] for m in members if m.get("igdb_id")}
+        target = next((igdb_owner[g] for g in gids if g in igdb_owner), None)
+        if target is None:
+            target = len(merged)
+            merged.append([])
+        merged[target].extend(members)
+        for g in gids:
+            igdb_owner[g] = target
+
+    games: list[dict[str, Any]] = []
+    for members in merged:
         base = _base_member(members)
+        key = canonical_title(base.get("normalized_title"))
 
         platforms = {m["platform"] for m in members if m.get("platform") not in _GENERIC_PLATFORMS}
         platform = next(iter(platforms)) if len(platforms) == 1 else (
