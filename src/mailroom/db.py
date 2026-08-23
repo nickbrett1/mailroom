@@ -275,7 +275,15 @@ LEFT JOIN game_covers c ON c.igdb_id = g.igdb_id
 -- (store titles carry '™' — 'ELDEN RING™' vs the trophy set's 'ELDEN RING';
 -- the trophy API exposes only the NPWR set id, not the content id). A
 -- dual-SKU title gets the same stats on both rows (shared set).
-LEFT JOIN game_stats s ON s.normalized_title = replace(replace(replace(
+-- One game_stats row per normalized_title (a title can have several trophy
+-- sets for different regions/SKUs); picking MAX(trophy_title_id) keeps the
+-- join 1:1 so the view doesn't emit duplicate rows per owned game.
+LEFT JOIN (
+    SELECT * FROM game_stats
+    WHERE trophy_title_id IN (
+        SELECT MAX(trophy_title_id) FROM game_stats GROUP BY normalized_title
+    )
+) s ON s.normalized_title = replace(replace(replace(
     g.normalized_title, '™', ''), '®', ''), '©', '')
 WHERE g.is_owned = 1;
 
@@ -315,7 +323,12 @@ SELECT
 FROM games g
 LEFT JOIN game_metadata m ON m.igdb_id = g.igdb_id
 LEFT JOIN game_covers c ON c.igdb_id = g.igdb_id
-LEFT JOIN game_stats s ON s.normalized_title = replace(replace(replace(
+LEFT JOIN (
+    SELECT * FROM game_stats
+    WHERE trophy_title_id IN (
+        SELECT MAX(trophy_title_id) FROM game_stats GROUP BY normalized_title
+    )
+) s ON s.normalized_title = replace(replace(replace(
     g.normalized_title, '™', ''), '®', ''), '©', '');
 
 -- Source authentication (PSN PS-App OAuth refresh token, future API sources).
