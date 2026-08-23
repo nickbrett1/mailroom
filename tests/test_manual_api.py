@@ -150,6 +150,36 @@ def test_apply_unknown_game_404(client):
     assert res.status_code == 404
 
 
+def test_exclude_removes_from_needs_match(client):
+    """Excluding a non-game (artbook/beta) retires the row so it leaves the
+    needs-match list and the catalog, and audits to review_queue."""
+    from mailroom.db import connect
+
+    game_id = client.get("/manual/needs-match").json()[0]["owned_game_id"]
+    res = client.post("/manual/needs-match/exclude", json={"owned_game_id": game_id, "reason": "artbook"})
+    assert res.status_code == 200
+    assert res.json()["excluded"] is True
+    assert res.json()["retire_reason"] == "excluded:artbook"
+    assert client.get("/manual/needs-match").json() == []
+
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    row = conn.execute("SELECT is_owned, status, retire_reason FROM owned_games WHERE id = ?", (game_id,)).fetchone()
+    assert row["is_owned"] == 0
+    assert row["status"] == "retired"
+    assert row["retire_reason"] == "excluded:artbook"
+    audit = conn.execute("SELECT source, status FROM review_queue WHERE source = 'manual_exclude'").fetchone()
+    assert audit is not None and audit["status"] == "resolved"
+    conn.close()
+
+
+def test_exclude_unknown_and_already_retired(client):
+    assert client.post("/manual/needs-match/exclude", json={"owned_game_id": 9999}).status_code == 404
+    game_id = client.get("/manual/needs-match").json()[0]["owned_game_id"]
+    assert client.post("/manual/needs-match/exclude", json={"owned_game_id": game_id}).status_code == 200
+    # already retired -> 409
+    assert client.post("/manual/needs-match/exclude", json={"owned_game_id": game_id}).status_code == 409
+
+
 def test_psn_credential_status_and_refresh(client, monkeypatch):
     from mailroom.db import connect, set_credential
 
