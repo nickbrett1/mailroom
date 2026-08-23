@@ -210,6 +210,35 @@ def test_build_groups_more_edition_variants():
     assert by_norm["kayak vr: mirage"]["num_editions"] == 2
 
 
+def test_build_groups_more_edition_variants_2():
+    """More edition/collection folds: Rock Band 4 Rivals, Civ VI Platinum,
+    Spiritfarer Farewell, Subnautica/Prince of Persia colon variants,
+    Naheulbeuk Chicken, Swords of Ditto, Saints & Sinners (Standard/Tourist),
+    Two Point JUMBO, Valkyria Remastered, Virginia Special Edition Bundle."""
+    pairs = [
+        ("rock band 4", "rock band 4 rivals bundle"),
+        ("sid meier's civilization vi", "sid meier's civilization vi platinum edition"),
+        ("spiritfarer", "spiritfarer: farewell edition"),
+        ("subnautica below zero", "subnautica: below zero"),
+        ("prince of persia the lost crown", "prince of persia: the lost crown"),
+        ("the dungeon of naheulbeuk: the amulet of chaos",
+         "the dungeon of naheulbeuk: the amulet of chaos - chicken edition"),
+        ("the swords of ditto", "the swords of ditto: mormo's curse"),
+        ("the walking dead: saints & sinners",
+         "the walking dead: saints & sinners - standard edition"),
+        ("the walking dead: saints & sinners",
+         "the walking dead: saints & sinners tourist edition"),
+        ("two point hospital", "two point hospital: jumbo edition"),
+        ("valkyria chronicles", "valkyria chronicles remastered"),
+        ("virginia", "virginia - special edition bundle"),
+    ]
+    for a, b in pairs:
+        assert canonical_title(a) == canonical_title(b), (a, b)
+    # distinct titles must NOT fold together
+    assert canonical_title("metroid prime") != canonical_title("metroid prime remastered")
+    assert canonical_title("rayman legends") != canonical_title("rayman origins")
+
+
 def test_init_db_idempotent_with_game_id():
     """Re-running init_db (as concurrent assets do) must not fail on the
     ALTER ADD COLUMN game_id migration (duplicate-column race, seen live)."""

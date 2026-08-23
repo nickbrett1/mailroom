@@ -40,6 +40,11 @@ EDITION_GROUPS: dict[str, str] = {
     "dragon's crown pro": "dragon's crown",
     # Guacamelee! 2 Complete is the DLC-complete edition of Guacamelee! 2.
     "guacamelee! 2 complete": "guacamelee! 2",
+    # Same game, only the punctuation differs between PSN listings.
+    "prince of persia: the lost crown": "prince of persia the lost crown",
+    "subnautica: below zero": "subnautica below zero",
+    # Valkyria Chronicles Remastered is the PS4 version of Valkyria Chronicles.
+    "valkyria chronicles remastered": "valkyria chronicles",
 }
 
 # Edition / bundle markers folded onto the base title. These do NOT denote a
@@ -60,6 +65,15 @@ _EDITION_MARKERS = [
     r"(?:[-–—:]?\s*)?royal edition",
     r"(?:[-–—:]?\s*)?founders edition",
     r"(?:[-–—:]?\s*)?complete edition",
+    r"(?:[-–—:]?\s*)?standard edition",
+    r"(?:[-–—:]?\s*)?tourist edition",
+    r"(?:[-–—:]?\s*)?farewell edition",
+    r"(?:[-–—:]?\s*)?platinum edition",
+    r"(?:[-–—:]?\s*)?jumbo edition",
+    r"(?:[-–—:]?\s*)?rivals bundle",
+    r"(?:[-–—:]?\s*)?chicken edition",
+    r"(?:[-–—:]?\s*)?mormo's curse",
+    r"(?:[-–—:]?\s*)?special edition bundle",
     r"(?:[-–—:]?\s*)?digital deluxe edition",
     r"(?:[-–—:]?\s*)?cross-gen deluxe bundle",
     r"(?:[-–—:]?\s*)?deluxe edition",
