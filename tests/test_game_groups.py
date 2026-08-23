@@ -242,6 +242,12 @@ def test_build_groups_more_edition_variants_2():
     assert canonical_title("synth riders + 80s mixtape side b") == "synth riders"
     # Agents of Mayhem - Total Mayhem Bundle folds onto the base
     assert canonical_title("agents of mayhem - total mayhem bundle (full game and add-on content)") == "agents of mayhem"
+    # Cuphead + Delicious Last Course / Steredenn Binary Stars / Geometry Wars / TWD / Teslagrad
+    assert canonical_title("cuphead & the delicious last course") == "cuphead"
+    assert canonical_title("steredenn: binary stars") == "steredenn"
+    assert canonical_title("geometry wars 3: dimensions") == "geometry wars 3: dimensions evolved"
+    assert canonical_title("the walking dead: the complete first season") == "the walking dead: season 1"
+    assert canonical_title("teslagrad") == "teslagrad remastered"
 
 
 def test_init_db_idempotent_with_game_id():

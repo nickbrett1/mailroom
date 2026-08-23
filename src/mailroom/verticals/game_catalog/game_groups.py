@@ -50,6 +50,18 @@ EDITION_GROUPS: dict[str, str] = {
     "synth riders + 80s mixtape side a": "synth riders",
     "synth riders + 80s mixtape - side b": "synth riders",
     "synth riders + 80s mixtape side b": "synth riders",
+    # Cuphead + its "The Delicious Last Course" DLC bundle is the same game.
+    "cuphead & the delicious last course": "cuphead",
+    "cuphead and the delicious last course": "cuphead",
+    # Steredenn: Binary Stars is the same game as Steredenn (with DLC).
+    "steredenn: binary stars": "steredenn",
+    # Geometry Wars 3: Dimensions Evolved is the updated version of Geometry Wars 3.
+    "geometry wars 3: dimensions": "geometry wars 3: dimensions evolved",
+    "geometry wars³: dimensions": "geometry wars 3: dimensions evolved",
+    # The Complete First Season == Season 1.
+    "the walking dead: the complete first season": "the walking dead: season 1",
+    # User only owns the remastered Teslagrad.
+    "teslagrad": "teslagrad remastered",
 }
 
 # Edition / bundle markers folded onto the base title. These do NOT denote a
