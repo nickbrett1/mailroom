@@ -180,6 +180,40 @@ def test_exclude_unknown_and_already_retired(client):
     assert client.post("/manual/needs-match/exclude", json={"owned_game_id": game_id}).status_code == 409
 
 
+def test_igdb_match_reapply_is_idempotent(monkeypatch, tmp_path):
+    """Re-applying a match for the same (source, order, title, reason) that was
+    already audited must not 500 on the review_queue unique index."""
+    db = tmp_path / "t.db"
+    from mailroom.db import connect, init_db, upsert_owned_game
+
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    base = {
+        "title": 'Diablo IV - PlayStation 5"', "normalized_title": 'diablo iv - "',
+        "platform": "playstation 5", "format": "physical", "ownership_class": "purchased",
+        "retailer": "amazon", "order_number": "111-8148964-1449822", "item_id": None,
+        "condition": None, "psn_content_id": None, "acquisition_date": "2025-01-12T22:20:54Z",
+        "price": "$25.04", "source": "amazon", "source_ref": "X", "status": "owned", "is_owned": 1,
+    }
+    upsert_owned_game(conn, {**base, "igdb_id": 125165, "provenance": "amazon:o:Diablo"})
+    # an audit row already exists (from the first manual match)
+    conn.execute(
+        """INSERT INTO review_queue(source, order_number, title, reason, payload, status)
+           VALUES ('manual_igdb_match', '111-8148964-1449822', 'Diablo IV - PlayStation 5"',
+                   'manual IGDB match applied (igdb 125165)', '', 'resolved')"""
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("MAILROOM_DB_URL", f"sqlite:///{db}")
+    from mailroom import manual_api
+
+    c = TestClient(manual_api.app)
+    # re-applying to a duplicate row with an already-audited reason must not 500
+    res = c.post("/manual/igdb-match", json={"owned_game_id": 1, "igdb_id": 125165})
+    assert res.status_code in (200, 409)
+    assert res.status_code != 500
+
+
 def test_psn_credential_status_and_refresh(client, monkeypatch):
     from mailroom.db import connect, set_credential
 
