@@ -1,0 +1,7 @@
+dagster
+dagster-webserver
+httpx
+
+[dev]
+pytest>=8.0
+ruff>=0.4

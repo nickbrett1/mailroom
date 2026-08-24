@@ -199,7 +199,7 @@ def test_splits_collection_bundle_into_member_games():
         format="digital", source="psn_receipt", igdb_id=99733,
         provenance="psn_receipt:298438957255:0",
     )
-    report = apply_catalog_repairs(conn)
+    apply_catalog_repairs(conn)
     # collection retired
     c = conn.execute("SELECT * FROM owned_games WHERE id = ?", (coll,)).fetchone()
     assert c["is_owned"] == 0 and c["retire_reason"] == "collection_split"
@@ -288,7 +288,7 @@ def test_splits_collection_by_title_when_igdb_unmatched():
         format="digital", source="psn_receipt", igdb_id=None,  # unmatched
         provenance="psn_receipt:504599545638:0",
     )
-    report = apply_catalog_repairs(conn)
+    apply_catalog_repairs(conn)
     assert conn.execute("SELECT * FROM owned_games WHERE id = ?", (coll,)).fetchone()["is_owned"] == 0
     ids = {r["igdb_id"] for r in conn.execute("SELECT igdb_id FROM owned_games WHERE is_owned = 1")}
     assert 34293 in ids and 34294 in ids and 538 in ids  # BioShock Remastered / 2 / Infinite
