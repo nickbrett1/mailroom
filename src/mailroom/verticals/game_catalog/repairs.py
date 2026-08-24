@@ -160,6 +160,14 @@ COLLECTION_SPLITS: dict[int, list[dict]] = {
         {"title": "Persona 4: Dancing All Night", "igdb_id": 11056, "platform": "playstation 4"},
         {"title": "Persona 5: Dancing in Starlight", "igdb_id": 54218, "platform": "playstation 4"},
     ],
+    168670: [  # Uncharted: Legacy of Thieves Collection (PS5 remasters of
+               # Uncharted 4: A Thief's End + Uncharted: The Lost Legacy). The
+               # collection card hides The Lost Legacy, so it is broken out as
+               # its own entry. Uncharted 4 is already owned (PS+ PS4), so that
+               # member merges into it; Lost Legacy gets a fresh PS5 row.
+        {"title": "Uncharted 4: A Thief's End", "igdb_id": 7331, "platform": "playstation 5"},
+        {"title": "Uncharted: The Lost Legacy", "igdb_id": 26193, "platform": "playstation 5"},
+    ],
 }
 
 
@@ -173,6 +181,7 @@ COLLECTION_TITLES: dict[int, list[str]] = {
     154181: ["shadowrun trilogy"],
     99733: ["hotline miami collection"],
     106988: ["persona dancing: endless night collection"],
+    168670: ["uncharted: legacy of thieves collection"],
 }
 
 

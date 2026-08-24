@@ -279,6 +279,38 @@ def test_splits_persona_endless_night_collection():
     conn.close()
 
 
+def test_splits_uncharted_legacy_of_thieves_collection():
+    """'Uncharted: Legacy of Thieves Collection' (one PS5 physical receipt) is
+    retired and broken out: Uncharted 4 (already owned, PS4 PS+) merges the
+    collection receipt into its provenance, and The Lost Legacy gets a fresh
+    owned row so it's no longer hidden inside the collection card."""
+    conn, _ = _db()
+    uncharted4 = _seed(
+        conn, title="UNCHARTED 4: A Thief’s End", platform="playstation 4",
+        source="psn_receipt", psn_content_id="UP9000-CUSA00341_00-UNCHARTED0000000",
+        igdb_id=7331, ownership_class="psplus_claimed",
+        provenance="psn_receipt:247418470492:0",
+    )
+    coll = _seed(
+        conn, title="Uncharted: Legacy of Thieves Collection", platform="playstation 5",
+        format="physical", source="amazon", igdb_id=168670,
+        order_number="112-8319987-1313862", price="$19.99",
+        provenance="amazon:112-8319987-1313862:Uncharted: Legacy of Thieves Collection",
+    )
+    apply_catalog_repairs(conn)
+    # collection retired; Uncharted 4 kept (receipt merged), Lost Legacy created
+    assert conn.execute("SELECT * FROM owned_games WHERE id = ?", (coll,)).fetchone()["is_owned"] == 0
+    u4 = conn.execute("SELECT * FROM owned_games WHERE id = ?", (uncharted4,)).fetchone()
+    assert u4["is_owned"] == 1
+    assert "amazon:112-8319987-1313862:Uncharted: Legacy of Thieves Collection" in (u4["provenance"] or "")
+    lost = conn.execute(
+        "SELECT * FROM owned_games WHERE igdb_id = 26193 AND is_owned = 1"
+    ).fetchone()
+    assert lost is not None and lost["title"] == "Uncharted: The Lost Legacy"
+    assert lost["platform"] == "playstation 5" and lost["format"] == "physical"
+    conn.close()
+
+
 def test_splits_collection_by_title_when_igdb_unmatched():
     """A collection row whose igdb_id is NULL (never matched) is still split by
     its title, so it can't linger as one card in the UI."""
