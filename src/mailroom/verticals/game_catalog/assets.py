@@ -987,6 +987,32 @@ def igdb_matches(context: AssetExecutionContext) -> None:
             scope_params,
         )
         conn.commit()
+    # Re-apply prior MANUAL matches to rows that lost them. A full-chain
+    # re-ingestion rebuilds owned_games with igdb_id=NULL, but human picks
+    # (confidence='manual') are durable in igdb_matches — keyed on the OLD row
+    # id. Match the current unmatched row to the originally-matched row by its
+    # stable identity (normalized_title, platform, format) and restore igdb_id
+    # so a human pick survives re-ingestion. Idempotent: restored rows then
+    # have igdb_id set, so they drop out of the auto-match pass below, and
+    # recheck (which clears igdb_id first) restores human picks instead of
+    # letting the auto-matcher override them.
+    restored = 0
+    for r in conn.execute(
+        """SELECT g.id, m.igdb_id
+           FROM owned_games g
+           JOIN igdb_matches m ON m.confidence = 'manual'
+           JOIN owned_games orig ON orig.id = m.owned_game_id
+           WHERE g.is_owned = 1 AND g.igdb_id IS NULL
+             AND g.normalized_title = orig.normalized_title
+             AND g.platform = orig.platform
+             AND g.format = orig.format"""
+    ).fetchall():
+        conn.execute(
+            "UPDATE owned_games SET igdb_id = ?, updated_at = datetime('now') WHERE id = ?",
+            (r["igdb_id"], r["id"]),
+        )
+        restored += 1
+    conn.commit()
     rows = conn.execute(
         f"SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id IS NULL {scope_sql}",
         scope_params,
