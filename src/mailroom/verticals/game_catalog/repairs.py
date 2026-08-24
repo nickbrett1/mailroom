@@ -30,7 +30,6 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from mailroom.db import merge_provenance, provenance_parts
 from mailroom.verticals.game_catalog.parsers.psn import normalize_title
@@ -315,66 +314,13 @@ def _prov_cid(part: str) -> str | None:
     return None
 
 
-# Content ids in the PSN dump: 'UP9000-CUSA08010_00-DREAMS0000000000'.
-_PSN_CID_RE = re.compile(r"([A-Z]{2}\d{4}-[A-Z0-9]{4,}_\d{2}-[A-Z0-9]+)")
-
-
-def _platform_for_content_id(cid: str) -> str:
-    """Platform heuristic from the content id (CUSA=PS4, PPSA=PS5, PCSE=Vita)."""
-    upper = cid.upper()
-    if "PPSA" in upper:
-        return "playstation 5"
-    if "CUSA" in upper:
-        return "playstation 4"
-    if "PCSE" in upper or "PCSF" in upper:
-        return "ps vita"
-    if "NPUJ" in upper or "NPUA" in upper or "NPUF" in upper:
-        return "playstation 3"  # PS1 classics / minis era
-    if "NPJB" in upper:
-        return "playstation"  # PSP
-    return "playstation"
-
-
-_psn_dump_titles: dict[str, str] | None = None
-
-
-def _load_psn_dump_titles() -> dict[str, str]:
-    """content id -> title from inputs/psn_dump.txt (bundled into the image;
-    names may wrap across lines, same parse as scripts/check_psn_dump.py)."""
-    global _psn_dump_titles
-    if _psn_dump_titles is not None:
-        return _psn_dump_titles
-    path = Path(__file__).resolve().parents[4] / "inputs" / "psn_dump.txt"
-    _psn_dump_titles = {}
-    if not path.exists():
-        return _psn_dump_titles
-    text = path.read_text(encoding="utf-8")
-    pos = 0
-    for m in _PSN_CID_RE.finditer(text):
-        name = text[pos : m.start()]
-        pos = m.end()
-        name = re.sub(r"\s*\n\s*", " ", name)
-        name = re.sub(r"\s+", " ", name).strip(" -\n")
-        if name:
-            _psn_dump_titles[m.group(1)] = name
-    return _psn_dump_titles
-
-
 def _split_plan(cid: str) -> dict | None:
-    """Split row fields for one content id: verified override, else a generic
-    plan (title from the PSN dump + platform heuristic, igdb left for the next
-    igdb_matches pass). None when the id can't be resolved at all."""
+    """Split row fields for one content id: a verified override, else None.
+    Without the PSN title dump no generic plan can be built, so unknown ids
+    can't be resolved and the row is skipped as unrecognized."""
     if cid in SPLIT_OVERRIDES:
         return dict(SPLIT_OVERRIDES[cid])
-    title = _load_psn_dump_titles().get(cid)
-    if not title:
-        return None
-    return {
-        "title": title,
-        "platform": _platform_for_content_id(cid),
-        "igdb_id": None,
-        "generic": True,
-    }
+    return None
 
 
 def _prov_json(parts: list[str]) -> str | None:

@@ -602,10 +602,10 @@ def test_title_alias_merges_another_fishermans_tale_into_sequel():
     conn.close()
 
 
-def test_generic_split_via_psn_dump_for_unknown_ids():
-    """Content ids not in SPLIT_OVERRIDES still split when the bundled PSN
-    dump knows their titles — new rows get igdb NULL (next igdb_matches pass)
-    and an audit note to verify."""
+def test_generic_split_via_psn_dump_removed_for_unknown_ids():
+    """Without the bundled PSN title dump, jammed content ids not in
+    SPLIT_OVERRIDES cannot be resolved, so the merged row is skipped (left
+    as-is) rather than split."""
     conn, _ = _db()
     _seed(
         conn,
@@ -622,17 +622,10 @@ def test_generic_split_via_psn_dump_for_unknown_ids():
     )
     apply_catalog_repairs(conn)
 
-    dreams = conn.execute(
-        "SELECT * FROM owned_games WHERE psn_content_id = ? AND is_owned = 1",
-        ("UP9000-CUSA08010_00-DREAMS0000000000",),
+    # Neither id resolves to a plan, so the merged row is left unsplit.
+    merged = conn.execute(
+        "SELECT * FROM owned_games WHERE psn_content_id LIKE '%,%' AND is_owned = 1"
     ).fetchone()
-    gow = conn.execute(
-        "SELECT * FROM owned_games WHERE psn_content_id = ? AND is_owned = 1",
-        ("UP9000-CUSA07408_00-00000000GODOFWAR",),
-    ).fetchone()
-    assert dreams is not None and gow is not None
-    assert dreams["title"] == "Dreams™"
-    assert dreams["igdb_id"] is None
-    assert gow["title"] == "God of War"
-    assert gow["igdb_id"] is None
+    assert merged is not None
+    assert merged["title"] == "Mystery Merged Game"
     conn.close()
