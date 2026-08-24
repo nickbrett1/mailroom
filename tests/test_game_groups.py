@@ -354,13 +354,15 @@ def test_platform_and_psvr2_overrides():
             "is_owned": 1, "provenance": None,
         }
 
-    # cross-gen / vita / psvr2 games currently stuck on generic 'playstation'
+    # cross-gen / vita / psvr2 games currently stuck on generic 'playstation'.
+    # Use full catalog titles to prove the igdb_id key is title-independent.
     rows = [
-        _r(1, "Far Cry 6", "playstation", 105897),
-        _r(2, "Persona 4 Golden", "playstation", 2770),
-        _r(3, "Resident Evil Village", "playstation", 102584),
+        _r(1, "Far Cry 6", "playstation", 126290),
+        _r(2, "Persona 4 Golden", "playstation", 2985),
+        _r(3, "Resident Evil Village", "playstation", 55163),
+        _r(4, "Atari 50: The Anniversary Celebration", "playstation", 207018),
         # control — not in the override map
-        _r(4, "Uncharted 4", "playstation", 14731),
+        _r(5, "Uncharted 4", "playstation", 14731),
     ]
     games, _ = build_games(rows)
     by_title = {g["title"]: g for g in games}
@@ -368,8 +370,10 @@ def test_platform_and_psvr2_overrides():
     assert by_title["Persona 4 Golden"]["platform"] == "playstation vita"
     assert by_title["Resident Evil Village"]["platform"] == "playstation 5"
     assert by_title["Resident Evil Village"]["is_psvr2"] == 1
+    # full catalog title still overridden via its igdb_id (the bug this fixes)
+    assert by_title["Atari 50: The Anniversary Celebration"]["platform"] == "playstation 5"
     # control is left generic (no auto signal, not overridden)
     assert by_title["Uncharted 4"]["platform"] == "playstation"
     assert by_title["Uncharted 4"]["is_psvr2"] == 0
-    assert canonical_title("resident evil 4") in PSVR2_OVERRIDES
-    assert PLATFORM_OVERRIDES["resident evil village"] == "playstation 5"
+    assert 132181 in PSVR2_OVERRIDES and 55163 in PSVR2_OVERRIDES
+    assert PLATFORM_OVERRIDES[55163] == "playstation 5"

@@ -211,55 +211,58 @@ def canonical_title(normalized_title: str | None) -> str:
 # single display platform when that's all a game has.
 _GENERIC_PLATFORMS = {None, "", "playstation", "ps"}
 
-# Curated per-game DISPLAY platform overrides, keyed on canonical_title (the
-# grouping key build_games uses). Cross-gen games (shipped on BOTH PS4 & PS5)
-# and PS Vita games can't be auto-pinned by _backfill_platform (which only
-# picks PS4 when PS5 is absent and vice-versa), so we pin the platform the
-# user actually owns. Applied in build_games so both `platform` and `platforms`
-# reflect it; owned_games rows are left untouched (no dedup-key impact).
-PLATFORM_OVERRIDES: dict[str, str] = {
-    "aspire: ina's tale": "playstation 4",
-    "atari 50": "playstation 5",
-    "far cry 6": "playstation 5",
-    "gran turismo": "playstation 5",
-    "hitman world of assassination": "playstation 5",
-    "kingdom hearts": "playstation 4",
-    "life is strange": "playstation 4",
-    "like a dragon: infinite wealth": "playstation 5",
-    "lost judgment": "playstation 5",
-    "guardians of the galaxy": "playstation 5",
-    "midnight suns": "playstation 5",
-    "metal gear solid: master collection": "playstation 5",
-    "metro awakening": "playstation 5",
-    "overwatch 2": "playstation 5",
-    "pankapu": "playstation 4",
-    "persona 3 reload": "playstation 5",
-    "persona 4 golden": "playstation vita",
-    "puyo puyo tetris 2": "playstation 5",
-    "resident evil 4": "playstation 5",
-    "resident evil village": "playstation 5",
-    "shadow of the colossus": "playstation 4",
-    "shenmue 2": "playstation 4",
-    "sonic origins plus": "playstation 5",
-    "star ocean: the second story of r": "playstation 5",
-    "suikoden 1 and 2 hd remastered": "playstation 5",
-    "syberia remastered": "playstation 5",
-    "the elder scrolls 5: skyrim": "playstation 5",
-    "the flame in the flood": "playstation 4",
-    "the outer worlds": "playstation 4",
-    "tiny tina's wonderlands": "playstation 5",
-    "trine": "playstation 4",
-    "trine 2": "playstation 4",
-    "unicorn overlord": "playstation 5",
+# Curated per-game DISPLAY platform overrides, keyed on IGDB id (the catalog's
+# stable per-game id). Cross-gen games (shipped on BOTH PS4 & PS5) and PS Vita
+# games can't be auto-pinned by _backfill_platform (which only picks PS4 when
+# PS5 is absent and vice-versa), so we pin the platform the user actually owns.
+# Keyed on igdb_id (NOT title) because the catalog's full titles ("Atari 50:
+# The Anniversary Celebration") don't match the short display names. Applied in
+# build_games so both `platform` and `platforms` reflect it; owned_games rows
+# are left untouched (no dedup-key impact).
+PLATFORM_OVERRIDES: dict[int, str] = {
+    172672: "playstation 4",    # Aspire: Ina's Tale
+    207018: "playstation 5",    # Atari 50: The Anniversary Celebration
+    126290: "playstation 5",    # Far Cry 6
+    101006: "playstation 5",    # Gran Turismo 7
+    284857: "playstation 5",    # HITMAN World of Assassination Part One
+    393742: "playstation 4",    # Kingdom Hearts
+    7599:   "playstation 4",    # Life Is Strange
+    217623: "playstation 5",    # Like a Dragon: Infinite Wealth
+    146851: "playstation 5",    # Lost Judgment
+    152249: "playstation 5",    # Marvel's Guardians of the Galaxy
+    165347: "playstation 5",    # Marvel's Midnight Suns
+    393638: "playstation 5",    # Metal Gear Solid: Master Collection
+    327147: "playstation 5",    # Metro Awakening
+    249584: "playstation 5",    # Overwatch 2
+    24440:  "playstation 4",    # Pankapu
+    252647: "playstation 5",    # Persona 3 Reload
+    2985:   "playstation vita",  # Persona 4 Golden
+    137132: "playstation 5",    # Puyo Puyo Tetris 2
+    55163:  "playstation 5",    # Resident Evil Village
+    132181: "playstation 5",    # Resident Evil 4
+    139896: "playstation 4",    # Shadow of the Colossus
+    1218:   "playstation 4",    # Shenmue II
+    241444: "playstation 5",    # Sonic Origins Plus
+    254337: "playstation 5",    # Star Ocean: The Second Story R
+    217909: "playstation 5",    # Suikoden I & II HD Remastered
+    890:    "playstation 5",    # Syberia Remastered
+    314945: "playstation 5",    # Tales of Graces f Remastered
+    472:    "playstation 5",    # The Elder Scrolls V: Skyrim Special Edition
+    9732:   "playstation 4",    # The Flame in the Flood
+    113114: "playstation 4",    # The Outer Worlds
+    152061: "playstation 5",    # Tiny Tina's Wonderlands
+    6247:   "playstation 4",    # Trine
+    6250:   "playstation 4",    # Trine 2
+    68353:  "playstation 5",    # Unicorn Overlord
 }
 
-# PSVR2-compatible titles, keyed on canonical_title. IGDB platform 390
-# (PlayStation VR2) isn't always present on the base game's metadata payload
-# (e.g. the RE4/RE Village remakes), so pin the flag here. Display platform
-# stays the console it runs on (PS5); this only flips the is_psvr2 flag.
-PSVR2_OVERRIDES: set[str] = {
-    "resident evil 4",
-    "resident evil village",
+# PSVR2-compatible games, keyed on IGDB id. IGDB platform 390 (PlayStation VR2)
+# isn't always present on the base game's metadata payload (e.g. the RE4 / RE
+# Village remakes), so pin the flag here. Display platform stays the console it
+# runs on (PS5); this only flips the is_psvr2 flag.
+PSVR2_OVERRIDES: set[int] = {
+    132181,  # Resident Evil 4 (2023 remake)
+    55163,   # Resident Evil Village
 }
 
 
@@ -360,11 +363,11 @@ def build_games(
                 is_psvr2 = 1
                 break
 
-        # Curated display overrides: pin a cross-gen/Vita game's platform and
-        # the PSVR2 flag (see PLATFORM_OVERRIDES / PSVR2_OVERRIDES above).
-        if key in PLATFORM_OVERRIDES:
-            platform = PLATFORM_OVERRIDES[key]
-        if key in PSVR2_OVERRIDES:
+        # Curated display overrides (keyed on igdb_id — robust to full catalog
+        # titles): pin a cross-gen/Vita game's platform and the PSVR2 flag.
+        if igdb_id in PLATFORM_OVERRIDES:
+            platform = PLATFORM_OVERRIDES[igdb_id]
+        if igdb_id in PSVR2_OVERRIDES:
             is_psvr2 = 1
 
         dates = [m["acquisition_date"] for m in members if m.get("acquisition_date")]
@@ -384,7 +387,7 @@ def build_games(
                 "normalized_title": key,
                 "igdb_id": igdb_id,
                 "platform": platform,
-                "platforms": (platform if key in PLATFORM_OVERRIDES
+                "platforms": (platform if igdb_id in PLATFORM_OVERRIDES
                               else _agg([m["platform"] for m in members], _GENERIC_PLATFORMS) or platform),
                 "formats": _agg([m["format"] for m in members]),
                 "ownership_classes": _agg([m["ownership_class"] for m in members]),
