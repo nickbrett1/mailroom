@@ -18,6 +18,7 @@ jobs:
       - run:
           name: Install Packages
           command: |
+            rm -rf .venv
             python3 -m venv .venv
             echo '. .venv/bin/activate' >> "$BASH_ENV"
             pip install --upgrade pip
