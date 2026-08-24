@@ -702,3 +702,72 @@ def test_igdb_matches_roman_single_i_at_end():
 
 def test_igdb_search_term_strips_version_word():
     assert assets.igdb_search_term("Wreckfest PlayStation®5 Version (Game)") == "wreckfest"
+
+
+def test_igdb_matches_restores_manual_match_after_reingestion():
+    """A full re-ingestion rebuilds owned_games with igdb_id=NULL, silently
+    dropping human picks. igdb_matches must re-apply any prior MANUAL match
+    (confidence='manual' in igdb_matches) to the re-ingested row before the
+    auto-matcher runs — so a pick survives even when the auto-matcher can't
+    re-find the game."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    # 1) a game was manually matched (igdb_id set + a durable 'manual' igdb_matches row)
+    _seed_game(conn, "Jotun", platform="playstation 4", igdb_id=14147, source="psn_receipt")
+    gid = conn.execute("SELECT id FROM owned_games WHERE title = 'Jotun'").fetchone()["id"]
+    conn.execute(
+        "INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title) VALUES (?,?,?,?)",
+        (gid, 14147, "manual", "Jotun"),
+    )
+    conn.commit()
+    # 2) full re-ingestion wipes igdb_id on the owned row (auto-matcher, given a
+    #    stub that can't find the title, would otherwise leave it unmatched)
+    conn.execute("UPDATE owned_games SET igdb_id = NULL WHERE id = ?", (gid,))
+    conn.commit()
+    conn.close()
+
+    stub = _StubIgdb(search={})  # auto-match finds nothing
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (gid,)).fetchone()
+    assert row["igdb_id"] == 14147, "manual pick must be restored after re-ingestion"
+    conn.close()
+
+
+def test_igdb_matches_restore_uses_stable_identity_not_row_id():
+    """The restore must re-apply the manual pick to the RE-INGESTED row even
+    when it's a NEW owned row id (a receipt re-parse that created a fresh row),
+    matched on (normalized_title, platform, format) rather than the old id."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    # 1) an OLD row was manually matched to Jotun and then retired by a re-ingestion
+    _seed_game(conn, "Jotun", platform="playstation 4", igdb_id=14147, source="psn_receipt")
+    old = conn.execute("SELECT id FROM owned_games WHERE title = 'Jotun'").fetchone()["id"]
+    conn.execute(
+        "INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title) VALUES (?,?,?,?)",
+        (old, 14147, "manual", "Jotun"),
+    )
+    conn.execute("UPDATE owned_games SET is_owned=0, igdb_id=NULL WHERE id = ?", (old,))
+    # 2) a NEW row (same stable identity) was created for the re-ingested receipt
+    conn.execute(
+        """INSERT INTO owned_games(title, normalized_title, platform, format, ownership_class,
+               source, is_owned, igdb_id, provenance)
+           VALUES ('Jotun', 'jotun', 'playstation 4', 'physical', 'purchased', 'psn_receipt', 1, NULL, 'psn_receipt:new')"""
+    )
+    new = conn.execute(
+        "SELECT id FROM owned_games WHERE provenance = 'psn_receipt:new'"
+    ).fetchone()["id"]
+    assert new != old
+    conn.commit()
+    conn.close()
+
+    stub = _StubIgdb(search={})
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (new,)).fetchone()
+    assert row["igdb_id"] == 14147, "manual pick must transfer to the re-ingested row"
+    conn.close()
