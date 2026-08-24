@@ -1,42 +1,43 @@
- Optional# Node
- Optionalnode_modules
- Optionalnpm-debug.log*
- Optionalyarn-debug.log*
- Optionalyarn-error.log*
- Optionalpnpm-debug.log*
- Optional
- Optional# SvelteKit
- Optional.svelte-kit
- Optionalbuild
- Optional.env
- Optional.env.*
- Optional!.env.example
- Optionalvite.config.js.timestamp-*
- Optionalvite.config.ts.timestamp-*
- Optional
- Optional# OS
- Optional.DS_Store
- OptionalThumbs.db
- Optional
- Optional# Antigravity
- Optional.antigravitycli
- Optional
- Optional# Optional
- Optional
- Optional
- Optional# Python
- Optional__pycache__/
- Optional*.py[cod]
- Optional*$py.class
- Optional.venv
- Optionalvenv/
- Optional*.manifest
- Optional*.egg-info/
- Optional
- Optional# Dagster
- Optional.tmp_dagster*
- Optional
- Optional
- Optional
+# Node
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# SvelteKit
+.svelte-kit
+build
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Antigravity
+.antigravitycli
+
+# Optional
+
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv
+venv/
+*.manifest
+*.egg-info/
+
+# Dagster
+.tmp_dagster*
+
+
+
 
 # scratch data (personal game dumps)
+inputs/
