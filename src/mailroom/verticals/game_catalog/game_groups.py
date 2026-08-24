@@ -87,6 +87,7 @@ _EDITION_MARKERS = [
     r"(?:[-–—:]?\s*)?founders edition",
     r"(?:[-–—:]?\s*)?the complete edition",
     r"(?:[-–—:]?\s*)?complete edition",
+    r"(?:[-–—:]?\s*)?zombies chronicles edition",
     r"(?:[-–—:]?\s*)?standard edition",
     r"(?:[-–—:]?\s*)?tourist edition",
     r"(?:[-–—:]?\s*)?farewell edition",
