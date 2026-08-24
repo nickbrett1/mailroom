@@ -996,8 +996,7 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     # have igdb_id set, so they drop out of the auto-match pass below, and
     # recheck (which clears igdb_id first) restores human picks instead of
     # letting the auto-matcher override them.
-    restored = 0
-    for r in conn.execute(
+    to_restore = conn.execute(
         """SELECT g.id, m.igdb_id
            FROM owned_games g
            JOIN igdb_matches m ON m.confidence = 'manual'
@@ -1006,12 +1005,13 @@ def igdb_matches(context: AssetExecutionContext) -> None:
              AND g.normalized_title = orig.normalized_title
              AND g.platform = orig.platform
              AND g.format = orig.format"""
-    ).fetchall():
+    ).fetchall()
+    for r in to_restore:
         conn.execute(
             "UPDATE owned_games SET igdb_id = ?, updated_at = datetime('now') WHERE id = ?",
             (r["igdb_id"], r["id"]),
         )
-        restored += 1
+    restored = len(to_restore)
     conn.commit()
     rows = conn.execute(
         f"SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id IS NULL {scope_sql}",
@@ -1085,7 +1085,7 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     conn.commit()
     checkpoint_wal(conn)
     conn.close()
-    context.log.info(f"igdb_matches: {matched} matched, {unmatched} unmatched")
+    context.log.info(f"igdb_matches: {matched} matched, {unmatched} unmatched, {restored} manual restored")
 
 
 @asset(deps=[igdb_matches], required_resource_keys={"db_url"})
