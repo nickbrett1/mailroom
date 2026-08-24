@@ -7,10 +7,14 @@ jobs:
 
     steps:
       - checkout
+      # Cache pip's package cache (portable across runners) instead of the
+      # virtualenv: a cached .venv's python3 symlink points at a base
+      # interpreter path that may not exist on the next runner, so restoring it
+      # breaks the build (Error: .venv/bin/python3: No such file or directory).
       - restore_cache:
           keys:
-            - v1-venv-{{ checksum "pyproject.toml" }}
-            - v1-venv-
+            - v2-pip-{{ checksum "pyproject.toml" }}
+            - v2-pip-
       - run:
           name: Install Packages
           command: |
@@ -20,8 +24,8 @@ jobs:
             pip install -e ".[dev]"
       - save_cache:
           paths:
-            - .venv
-          key: v1-venv-{{ checksum "pyproject.toml" }}
+            - ~/.cache/pip
+          key: v2-pip-{{ checksum "pyproject.toml" }}
 
 
       - run:
