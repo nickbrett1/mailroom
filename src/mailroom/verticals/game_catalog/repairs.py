@@ -99,6 +99,20 @@ SPLIT_OVERRIDES = {
         "platform": "playstation 4",
         "igdb_id": 207026,  # IGDB 'Final Fantasy VII' (PS4 port of the 1997 game)
     },
+    "UP1003-CUSA02218_00-DISHONOREDGAMENA": {
+        "title": "Dishonored® Definitive Edition",
+        "platform": "playstation 4",
+        "igdb_id": 20863,  # IGDB 'Dishonored: Definitive Edition' (PS4, 2015)
+        "acquisition_date": "03/08/2023",
+        "price": "$4.99",
+    },
+    "UP1003-CUSA03642_00-DISHONORED2NAMER": {
+        "title": "Dishonored 2",
+        "platform": "playstation 4",
+        "igdb_id": 11118,  # IGDB 'Dishonored 2' (2016)
+        "acquisition_date": "12/08/2023",
+        "price": "$2.99",
+    },
 }
 
 # Provenance refs that don't carry the content id (receipt/cdkeys order
@@ -109,6 +123,8 @@ _ORDER_TO_CID = {
     "293544327031": "UP1055-CUSA02845_00-SUPERMEATBOY0000",  # PSN receipt Super Meat Boy
     "786997197463109": "UP1055-CUSA16602_00-SUPERMEATBOYFORE",  # PSN receipt Super Meat Boy Forever
     "253086790958": "UP0082-CUSA07211_00-FFVIIREMAKE00000",  # PSN receipt FFVII REMAKE ($0 PS+ claim)
+    "407682352826": "UP1003-CUSA02218_00-DISHONOREDGAMENA",  # PSN receipt Dishonored® Definitive Edition
+    "490700637631": "UP1003-CUSA03642_00-DISHONORED2NAMER",   # PSN receipt Dishonored 2
 }
 
 # --- collection bundles split into their member games -----------------------
