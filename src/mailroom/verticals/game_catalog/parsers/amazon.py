@@ -44,8 +44,40 @@ _TOTAL_RE = re.compile(r"(?:Grand\s+)?Total\s*:?\s*\n?\s*([\d,]+\.\d{2})\s*USD",
 # "Sold by Amazon.com Services" line. Verified msg 65274 (Uncharted: Nathan
 # Drake Collection), 39189 (Theatrhythm Final Bar Line), 64330 (Keurig).
 _SOLD_BY_RE = re.compile(r"(?m)^\s*Sold by Amazon\.com Services[^\n]*$")
+# 'Order details' / 'View your item' template: the item block sits ABOVE the
+# 'Sold by: <seller>' line, which itself is ABOVE the 'Order #', so the
+# order-block split (at 'Order #') never sees the item — the body only. The
+# item title is the cleanest (shortest) line above 'Sold by:'. Any seller is
+# matched ('Amazon.com', 'European Rarities', ...). Verified:
+# 'Beyond A Steel Sky: Beyond A SteelBook Edition (PS5)' (order 113-7134038-7289042)
+# and 'Evergate PS5 (PS5)' (order 111-5694915-7906620).
+_ORDER_DETAILS_SOLD_BY_RE = re.compile(r"(?m)^\s*Sold by:\s*\S.*$", re.IGNORECASE)
 # Item titles must not be order-block boilerplate lines.
 _DELIVERY_ITEM_SKIP = ("order #", "placed on", "new estimated", "previous estimated", "sold by")
+
+
+def _order_details_items(body: str) -> list[PurchaseItem]:
+    """Extract item title(s) from the 'Order details / View your item'
+    template, where the item sits above 'Sold by: Amazon.com' (above the
+    'Order #', so the order-block split never sees it). Picks the shortest
+    non-boilerplate line above 'Sold by:' — the clean title, even when the
+    email renders it as a mangled duplicate ('.…' tail)."""
+    items: list[PurchaseItem] = []
+    for m in _ORDER_DETAILS_SOLD_BY_RE.finditer(body):
+        header = body[: m.start()]
+        lines = [ln.strip() for ln in header.splitlines() if ln.strip()]
+        cands = [
+            ln for ln in lines
+            if not ln.lower().startswith(_DELIVERY_ITEM_SKIP)
+            and ln.lower() not in ("order details", "order summary")
+        ]
+        if not cands:
+            continue
+        title = min(cands, key=len)
+        if not title:
+            continue
+        items.append(PurchaseItem(title=title, price=None, qty=1))
+    return items
 
 
 def _delivery_estimate_items(block: str) -> list[PurchaseItem]:
@@ -136,6 +168,24 @@ def parse_amazon_receipt(body: str, message_id: str | None = None, subject: str 
         purchase = _parse_order_block(body[start:end], message_id)
         if purchase:
             purchases.append(purchase)
+    # 'Order details / View your item' template: the item block is above the
+    # 'Order #', so the order-block split above found nothing. Parse it from
+    # the body's 'Sold by: Amazon.com' section (independent of the subject).
+    if not purchases:
+        items = _order_details_items(body)
+        if items:
+            purchases.append(
+                Purchase(
+                    source="amazon",
+                    order_number=_ORDER_RE.search(body).group(1) if _ORDER_RE.search(body) else None,
+                    purchased_at=None,  # email received date (acquisition date)
+                    items=items,
+                    subtotal=None,
+                    tax=None,
+                    total=None,
+                    message_id=str(message_id) if message_id else None,
+                )
+            )
     # Newer Amazon template: the confirmation body has the order # + total but
     # NO item lines — the item lives only in the subject:
     # "Your Amazon.com order of \"Resident Evil 4 - PS5\"." (verified msg 32705).

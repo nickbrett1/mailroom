@@ -156,6 +156,37 @@ def test_igdb_matches_recheck_config_rematches_all():
     conn.close()
 
 
+def test_igdb_matches_recheck_scoped_to_subset():
+    """`only` config scopes a recheck to a subset of rows: rows outside the
+    scope keep their (wrong) igdb_id, only the targeted rows are re-matched."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Elden Ring", platform="playstation 5", igdb_id=325591)  # wrong (Nightreign)
+    _seed_game(conn, "God of War", platform="playstation 5", igdb_id=999)  # wrong, but NOT in scope
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "elden ring": [
+                {"id": 325591, "name": "Elden Ring Nightreign", "platforms": [167]},
+                {"id": 119133, "name": "Elden Ring", "platforms": [48, 167]},
+            ]
+        }
+    )
+    assets.igdb_matches(
+        build_op_context(
+            resources={"db_url": f"sqlite:///{db}", "igdb": stub},
+            config={"recheck": True, "only": ["elden ring"]},
+        )
+    )
+    conn = connect(f"sqlite:///{db}")
+    rows = {r["title"]: r["igdb_id"] for r in conn.execute("SELECT title, igdb_id FROM owned_games")}
+    assert rows["Elden Ring"] == 119133, "scoped row must be re-matched to the exact-name Elden Ring"
+    assert rows["God of War"] == 999, "out-of-scope row must be left untouched"
+    conn.close()
+
+
 def test_igdb_matches_falls_back_when_stripped_term_misses():
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")
@@ -475,6 +506,32 @@ def test_igdb_matches_token_gate_rejects_unrelated_first_result():
     conn = connect(f"sqlite:///{db}")
     row = conn.execute("SELECT * FROM owned_games").fetchone()
     assert row["igdb_id"] is None, "must not match the Dreams OST to a random High School Musical game"
+    conn.close()
+
+
+def test_igdb_matches_prefers_base_game_over_dlc_shadow():
+    """'Crypt of the NecroDancer (Full Game)' (receipt, no content id): the
+    stripped term 'crypt necrodancer' forward-contains both the base game and
+    the 'Synchrony' DLC, and IGDB ranks the DLC first — the picker must choose
+    the SHORTEST matching name (the base game, 7886), not the DLC (212583)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "Crypt of the NecroDancer (Full Game)", platform="playstation", source="psn_receipt")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "crypt necrodancer": [
+                {"id": 212583, "name": "Crypt of the NecroDancer: Synchrony", "platforms": [48, 167]},
+                {"id": 7886, "name": "Crypt of the NecroDancer", "platforms": [48, 130]},
+            ],
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] == 7886, "must pick the base game, not the Synchrony DLC"
     conn.close()
 
 

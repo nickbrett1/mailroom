@@ -152,6 +152,149 @@ def test_rematches_ambiguous_short_title_by_content_id():
     conn.close()
 
 
+def test_rematches_dlc_shadow_to_base_game_by_content_id():
+    conn, _ = _db()
+    game = _seed(
+        conn,
+        title="Crypt of the NecroDancer",
+        platform="playstation 4",
+        psn_content_id="UP1162-CUSA03610_00-CRYPTNECRODANCER",
+        igdb_id=212583,  # wrong: IGDB 'Crypt of the NecroDancer: Synchrony' (DLC)
+        source="psn_api",
+    )
+    report = apply_catalog_repairs(conn)
+    assert [r["id"] for r in report.rematched] == [game]
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (game,)).fetchone()
+    assert row["igdb_id"] == 7886  # IGDB 'Crypt of the NecroDancer' (base game, 2015)
+    assert conn.execute(
+        "SELECT confidence FROM igdb_matches WHERE owned_game_id = ?", (game,)
+    ).fetchone()["confidence"] == "manual"
+    conn.close()
+
+
+def test_rematches_dlc_shadow_to_base_game_by_title():
+    """A receipt row with no psn_content_id ('Batman™: Arkham Knight (Game)')
+    matched to a skin DLC (26041) is re-pinned to the base game by cleaned title."""
+    conn, _ = _db()
+    game = _seed(
+        conn,
+        title="Batman™: Arkham Knight (Game)",
+        platform="playstation",
+        source="psn_receipt",
+        igdb_id=26041,  # wrong: 'Batman: Arkham Knight - 2008 Movie Batman Skin'
+    )
+    report = apply_catalog_repairs(conn)
+    assert [r["id"] for r in report.rematched] == [game]
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (game,)).fetchone()
+    assert row["igdb_id"] == 5503  # IGDB 'Batman: Arkham Knight' (2015)
+    conn.close()
+
+
+def test_splits_collection_bundle_into_member_games():
+    """'Hotline Miami Collection' (one receipt row) is retired and split into
+    Hotline Miami + Hotline Miami 2, each owned with the correct IGDB id."""
+    conn, _ = _db()
+    coll = _seed(
+        conn, title="Hotline Miami Collection (Full Game)", platform="playstation",
+        format="digital", source="psn_receipt", igdb_id=99733,
+        provenance="psn_receipt:298438957255:0",
+    )
+    report = apply_catalog_repairs(conn)
+    # collection retired
+    c = conn.execute("SELECT * FROM owned_games WHERE id = ?", (coll,)).fetchone()
+    assert c["is_owned"] == 0 and c["retire_reason"] == "collection_split"
+    # both members now owned
+    ids = {r["igdb_id"] for r in conn.execute(
+        "SELECT igdb_id FROM owned_games WHERE is_owned = 1")}
+    assert 1384 in ids and 2126 in ids  # Hotline Miami, Hotline Miami 2
+    conn.close()
+
+
+def test_splits_collection_merges_into_already_owned_member():
+    """A collection member already owned ('BioShock Infinite' as the Complete
+    Edition) gets the collection receipt merged into its provenance instead of
+    a duplicate card."""
+    conn, _ = _db()
+    existing = _seed(
+        conn, title="Bioshock Infinite: The Complete Edition",
+        platform="playstation 4", source="psn_api",
+        psn_content_id="UP1001-CUSA03979_00-BIOSHOCKCOLLECTN", igdb_id=41595,
+        provenance="psn_api:UP1001-CUSA03979_00-BIOSHOCKCOLLECTN",
+    )
+    coll = _seed(
+        conn, title="BioShock: The Collection (Full Game)", platform="playstation",
+        format="digital", source="psn_receipt", igdb_id=19839,
+        provenance="psn_receipt:504599545638:0",
+    )
+    apply_catalog_repairs(conn)
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (existing,)).fetchone()
+    assert row["is_owned"] == 1
+    assert "psn_receipt:504599545638:0" in (row["provenance"] or "")
+    assert conn.execute("SELECT * FROM owned_games WHERE id = ?", (coll,)).fetchone()["is_owned"] == 0
+    conn.close()
+
+
+def test_rematches_beyond_a_steel_sky_steelbook_by_title():
+    """'Beyond A Steel Sky: Beyond A SteelBook Edition (PS5)' (Amazon order) is
+    pinned to the SteelBook Edition (171279), which IGDB search can't surface
+    from the noisy Amazon title."""
+    conn, _ = _db()
+    game = _seed(
+        conn,
+        title="Beyond A Steel Sky: Beyond A SteelBook Edition",
+        platform="playstation 5",
+        source="amazon",
+        igdb_id=None,
+        order_number="113-7134038-7289042",
+    )
+    report = apply_catalog_repairs(conn)
+    assert [r["id"] for r in report.rematched] == [game]
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (game,)).fetchone()
+    assert row["igdb_id"] == 171279  # IGDB 'Beyond a Steel Sky: Beyond a Steel Book Edition'
+    conn.close()
+
+
+def test_splits_persona_endless_night_collection():
+    """Persona Dancing: Endless Night Collection splits into its 3 games;
+    Persona 3 Dancing in Moonlight (already owned) is merged, Persona 4 and
+    Persona 5 get fresh rows."""
+    conn, _ = _db()
+    p3 = _seed(
+        conn, title="Persona 3: Dancing in Moonlight", platform="playstation 4",
+        source="psn_api", psn_content_id="UP2611-CUSA12380_00-PDANENDLESSNIGHT", igdb_id=54217,
+        provenance="psn_api:UP2611-CUSA12380_00-PDANENDLESSNIGHT",
+    )
+    coll = _seed(
+        conn, title="Persona Dancing: Endless Night Collection (Full Game)",
+        platform="playstation", format="digital", source="psn_receipt", igdb_id=106988,
+        provenance="psn_receipt:786850916202565:0",
+    )
+    apply_catalog_repairs(conn)
+    # collection retired; Persona 3 merged (still owned), P4 + P5 created
+    assert conn.execute("SELECT * FROM owned_games WHERE id = ?", (coll,)).fetchone()["is_owned"] == 0
+    ids = {r["igdb_id"] for r in conn.execute("SELECT igdb_id FROM owned_games WHERE is_owned = 1")}
+    assert 54217 in ids and 11056 in ids and 54218 in ids
+    p3row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (p3,)).fetchone()
+    assert "psn_receipt:786850916202565:0" in (p3row["provenance"] or "")
+    conn.close()
+
+
+def test_splits_collection_by_title_when_igdb_unmatched():
+    """A collection row whose igdb_id is NULL (never matched) is still split by
+    its title, so it can't linger as one card in the UI."""
+    conn, _ = _db()
+    coll = _seed(
+        conn, title="BioShock: The Collection (Full Game)", platform="playstation",
+        format="digital", source="psn_receipt", igdb_id=None,  # unmatched
+        provenance="psn_receipt:504599545638:0",
+    )
+    report = apply_catalog_repairs(conn)
+    assert conn.execute("SELECT * FROM owned_games WHERE id = ?", (coll,)).fetchone()["is_owned"] == 0
+    ids = {r["igdb_id"] for r in conn.execute("SELECT igdb_id FROM owned_games WHERE is_owned = 1")}
+    assert 34293 in ids and 34294 in ids and 538 in ids  # BioShock Remastered / 2 / Infinite
+    conn.close()
+
+
 def test_repairs_are_idempotent():
     conn, _ = _db()
     _seed(conn, title='Master Plunger MPS4 Sink ..." has been canceled', platform="playstation", format="physical", source="amazon", igdb_id=None)
@@ -370,6 +513,26 @@ def test_title_cleanup_strips_platform_suffix_and_more_items():
     assert row["title"] == "Diablo IV"
     assert row["normalized_title"] == "diablo iv"
     assert row["is_owned"] == 1
+    conn.close()
+
+
+def test_title_cleanup_strips_retailer_exclusive_and_size_note():
+    """'Secret of Mana - PlayStation 4 GameStop Exclusive' is just Secret of
+    Mana: the retailer-exclusive marker and platform suffix are display-only
+    noise. 'LIMBO (Full Game 128 MB)' drops the size-note parenthetical."""
+    conn, _ = _db()
+    mana = _seed(
+        conn, title="Secret of Mana - PlayStation 4 GameStop Exclusive",
+        platform="playstation 4", format="physical", source="gamestop", igdb_id=None,
+    )
+    limbo = _seed(
+        conn, title="LIMBO (Full Game 128 MB)",
+        platform="playstation", format="digital", source="psn_receipt", igdb_id=None,
+    )
+    report = apply_catalog_repairs(conn)
+    assert report.retired == []
+    assert conn.execute("SELECT title FROM owned_games WHERE id = ?", (mana,)).fetchone()["title"] == "Secret of Mana"
+    assert conn.execute("SELECT title FROM owned_games WHERE id = ?", (limbo,)).fetchone()["title"] == "LIMBO"
     conn.close()
 
 

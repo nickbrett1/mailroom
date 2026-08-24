@@ -62,6 +62,10 @@ EDITION_GROUPS: dict[str, str] = {
     "the walking dead: the complete first season": "the walking dead: season 1",
     # User only owns the remastered Teslagrad.
     "teslagrad": "teslagrad remastered",
+    # The Last of Us Part II Remastered is the same game as Part II (PS5
+    # enhanced port of the 2020 PS4 release) — collapse to one card.
+    "the last of us part ii remastered": "the last of us part ii",
+    "the last of us part 2 remastered": "the last of us part 2",
 }
 
 # Edition / bundle markers folded onto the base title. These do NOT denote a
@@ -81,6 +85,7 @@ _EDITION_MARKERS = [
     r"(?:[-–—:]?\s*)?reloaded edition",
     r"(?:[-–—:]?\s*)?royal edition",
     r"(?:[-–—:]?\s*)?founders edition",
+    r"(?:[-–—:]?\s*)?the complete edition",
     r"(?:[-–—:]?\s*)?complete edition",
     r"(?:[-–—:]?\s*)?standard edition",
     r"(?:[-–—:]?\s*)?tourist edition",
@@ -121,6 +126,40 @@ _ACCENT_MAP = {
     "č": "c", "ć": "c", "š": "s", "ž": "z", "ó": "o", "á": "a",
     "é": "e", "í": "i", "ú": "u", "ü": "u", "ö": "o", "ñ": "n",
 }
+
+
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def sortable_date(value: str | None) -> str | None:
+    """Normalize an acquisition date string to YYYY-MM-DD for sorting.
+
+    Stored dates arrive in mixed formats (MM/DD/YYYY, 'November 23, 2023',
+    ISO timestamps), so a plain lexicographic sort orders '04/10/2026' before
+    '1/19/2023'. Normalizing to ISO keeps a game's purchase-date sort correct.
+    None/unparseable -> None (callers treat as unknown / sort last).
+    """
+    if not value:
+        return None
+    s = str(value).strip()
+    # ISO date / timestamp: '2021-11-21T04:08:56Z', '2024-04-12…'
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})", s)
+    if m:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    # MM/DD/YYYY (also single-digit: '1/19/2023', '04/10/2026')
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", s)
+    if m:
+        return f"{int(m.group(3)):04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+    # 'November 23, 2023' / 'April 10, 2026'
+    m = re.match(r"^([A-Za-z]+)[\s.,]+\s*(\d{1,2}),?\s+(\d{4})$", s)
+    if m:
+        mo = _MONTHS.get(m.group(1).lower()[:3])
+        if mo:
+            return f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(2)):02d}"
+    return None
 
 
 def _normalize_punct(s: str) -> str:
@@ -271,7 +310,8 @@ def build_games(
                 break
 
         dates = [m["acquisition_date"] for m in members if m.get("acquisition_date")]
-        earliest = min(dates) if dates else None
+        sortable = [d for d in (sortable_date(x) for x in dates) if d]
+        earliest = min(sortable) if sortable else None
         purchased = 1 if any(m.get("ownership_class") == "purchased" for m in members) else 0
 
         prov: list[str] = []

@@ -162,6 +162,29 @@ def test_connect_sets_busy_timeout_for_concurrent_writers():
     conn.close()
 
 
+def test_checkpoint_wal_folds_changes_into_main_db():
+    """WAL mode leaves committed writes in the -wal file until a checkpoint.
+    checkpoint_wal() folds them into the main .db so a read-only consumer that
+    mounts the DB :ro (pshelf) — which can't coordinate -wal/-shm — sees the
+    change (memos/pshelf-readonly-wal)."""
+    from mailroom.db import checkpoint_wal
+
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    conn.execute("INSERT INTO owned_games(title, normalized_title, status, is_owned) VALUES ('X', 'x', 'owned', 1)")
+    conn.commit()
+    checkpoint_wal(conn)
+    # Main .db now contains the row even though the connection is closed.
+    import sqlite3
+
+    ro = sqlite3.connect(db)
+    n = ro.execute("SELECT COUNT(*) FROM owned_games").fetchone()[0]
+    ro.close()
+    assert n == 1
+    conn.close()
+
+
 def test_credential_helpers_and_owned_games_migration():
     db = tempfile.mktemp(suffix=".db")
     conn = connect(f"sqlite:///{db}")
