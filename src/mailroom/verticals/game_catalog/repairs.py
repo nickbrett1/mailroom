@@ -111,12 +111,155 @@ _ORDER_TO_CID = {
     "253086790958": "UP0082-CUSA07211_00-FFVIIREMAKE00000",  # PSN receipt FFVII REMAKE ($0 PS+ claim)
 }
 
+# --- collection bundles split into their member games -----------------------
+# A PSN/retailer collection bundle (Batman: Arkham Collection, BioShock: The
+# Collection, Shadowrun Trilogy, Hotline Miami Collection) shows up as ONE row /
+# ONE card, but the user wants each constituent game as its own entry with its
+# own cover art. Keyed on the collection's IGDB id -> member games. Members
+# already owned (same igdb_id or canonical grouping key, e.g. BioShock Infinite
+# already owned as 'The Complete Edition') get the collection's receipt merged
+# into their provenance; unowned members get a fresh row. The collection row is
+# retired (nothing is deleted).
+COLLECTION_SPLITS: dict[int, list[dict]] = {
+    112659: [  # Batman: Arkham Collection
+        {"title": "Batman: Arkham Asylum", "igdb_id": 500, "platform": "playstation 4"},
+        {"title": "Batman: Arkham City", "igdb_id": 501, "platform": "playstation 4"},
+        {"title": "Batman: Arkham Knight", "igdb_id": 5503, "platform": "playstation 4"},
+    ],
+    19839: [  # BioShock: The Collection (2016 remasters)
+        {"title": "BioShock Remastered", "igdb_id": 34293, "platform": "playstation 4"},
+        {"title": "BioShock 2 Remastered", "igdb_id": 34294, "platform": "playstation 4"},
+        {"title": "BioShock Infinite", "igdb_id": 538, "platform": "playstation 4"},
+    ],
+    154181: [  # Shadowrun Trilogy
+        {"title": "Shadowrun Returns", "igdb_id": 3020, "platform": "playstation 4"},
+        {"title": "Shadowrun: Dragonfall", "igdb_id": 22652, "platform": "playstation 4"},
+        {"title": "Shadowrun: Hong Kong", "igdb_id": 11772, "platform": "playstation 4"},
+    ],
+    99733: [  # Hotline Miami Collection
+        {"title": "Hotline Miami", "igdb_id": 1384, "platform": "playstation 4"},
+        {"title": "Hotline Miami 2: Wrong Number", "igdb_id": 2126, "platform": "playstation 4"},
+    ],
+    106988: [  # Persona Dancing: Endless Night Collection
+        {"title": "Persona 3: Dancing in Moonlight", "igdb_id": 54217, "platform": "playstation 4"},
+        {"title": "Persona 4: Dancing All Night", "igdb_id": 11056, "platform": "playstation 4"},
+        {"title": "Persona 5: Dancing in Starlight", "igdb_id": 54218, "platform": "playstation 4"},
+    ],
+}
+
+
+# Title substrings used as a FALLBACK to match a collection row whose igdb_id
+# is NULL / differs from the COLLECTION_SPLITS key in a given DB. Keyed on the
+# same igdb_id as COLLECTION_SPLITS. The split fires if a row's igdb_id equals
+# the key OR its title contains one of these fragments (case-insensitive).
+COLLECTION_TITLES: dict[int, list[str]] = {
+    112659: ["batman: arkham collection"],
+    19839: ["bioshock: the collection"],
+    154181: ["shadowrun trilogy"],
+    99733: ["hotline miami collection"],
+    106988: ["persona dancing: endless night collection"],
+}
+
+
+def _existing_owned_by_key(conn, member: dict) -> dict | None:
+    """An owned row that already represents this member game (same igdb_id, or
+    the same canonical grouping key so 'BioShock Infinite' matches an already-
+    owned 'BioShock Infinite: The Complete Edition'), else None."""
+    from mailroom.verticals.game_catalog.game_groups import canonical_title
+
+    if member.get("igdb_id"):
+        row = conn.execute(
+            "SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id = ?",
+            (member["igdb_id"],),
+        ).fetchone()
+        if row:
+            return dict(row)
+    key = canonical_title(member["title"])
+    for r in conn.execute("SELECT * FROM owned_games WHERE is_owned = 1").fetchall():
+        if canonical_title(r["normalized_title"]) == key:
+            return dict(r)
+    return None
+
+
+def _split_collection(conn, row, members: list[dict], report: RepairReport) -> None:
+    """Retire a collection receipt row and ensure each member game is owned."""
+    from mailroom.db import merge_provenance
+
+    _retire(conn, row, "collection_split")
+    _audit(conn, row["id"], row["title"], "split_collection",
+           f"collection broken into {len(members)} member games")
+    report.retired.append({"id": row["id"], "title": row["title"], "reason": "collection_split"})
+    prov_parts = provenance_parts(row["provenance"])
+    for m in members:
+        existing = _existing_owned_by_key(conn, m)
+        prov = merge_provenance(existing["provenance"] if existing else None,
+                                ", ".join(prov_parts) if prov_parts else row["provenance"])
+        if existing:
+            conn.execute(
+                """UPDATE owned_games SET provenance = ?, price = COALESCE(?, price),
+                   updated_at = datetime('now') WHERE id = ?""",
+                (prov, row["price"], existing["id"]),
+            )
+            _audit(conn, existing["id"], m["title"], "merge_collection_member",
+                   f"member of '{row['title']}' already owned — collection receipt merged into provenance")
+            report.merged.append({"id": existing["id"], "title": m["title"], "source": "collection_split"})
+        else:
+            cur = conn.execute(
+                """INSERT INTO owned_games
+                   (title, normalized_title, platform, format, ownership_class, retailer,
+                    order_number, item_id, condition, psn_content_id, igdb_id,
+                    acquisition_date, price, source, source_ref, status, is_owned, provenance)
+                   VALUES (?, ?, ?, ?, 'purchased', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 'owned', 1, ?)""",
+                (m["title"], normalize_title(m["title"]), m["platform"], row["format"],
+                 row["retailer"], None, None, None,
+                 m["igdb_id"], row["acquisition_date"], row["price"], row["source"],
+                 f"collection:{row['id']}", prov),
+            )
+            new_id = cur.lastrowid
+            if m["igdb_id"]:
+                conn.execute(
+                    """INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title)
+                       VALUES (?, ?, 'manual', ?)""",
+                    (new_id, m["igdb_id"], m["title"]),
+                )
+            _audit(conn, new_id, m["title"], "split_collection_member",
+                   f"member broken out of collection '{row['title']}' (owned row {row['id']})")
+            report.split.append({"id": new_id, "title": m["title"], "kept_cid": None, "split_cids": []})
+
+
 # --- ambiguous short titles pinned by content id ----------------------------
 # 'Unplugged' (VR air guitar, 2021) — IGDB search ranks 'Rock Band Unplugged'
 # (2009 PSP) first and the single-token title is too ambiguous to auto-pick.
 MATCH_OVERRIDES = {
     "UP3535-PPSA14005_00-0297859396070977": 153854,  # IGDB 'Unplugged' (VR air guitar)
+    "UP1162-CUSA03610_00-CRYPTNECRODANCER": 7886,  # IGDB 'Crypt of the NecroDancer' (base game, 2015), not the 'Synchrony' DLC (212583)
 }
+
+# IGDB match overrides for receipt rows that carry NO psn_content_id (so
+# MATCH_OVERRIDES can't reach them), keyed on a symbol-stripped normalized
+# title. IGDB's search ranks DLC skins before the base game and never surfaces
+# the base entry ('Batman: Arkham Knight' -> only '... Skin' DLC packs), so the
+# wrong art needs a manual pin. Applied in apply_catalog_repairs step 4b.
+TITLE_MATCH_OVERRIDES = {
+    # Receipt row 'Batman™: Arkham Knight (Game)' -> base game (2015), not a
+    # skin DLC (26041). IGDB id 5503 = 'Batman: Arkham Knight' (2015).
+    "batman arkham knight": 5503,
+    # 'Beyond A Steel Sky: Beyond A SteelBook Edition (PS5)' (Amazon order
+    # 113-7134038-7289042) -> the SteelBook Edition (171279), which IGDB search
+    # can't surface from the noisy Amazon title.
+    "beyond a steel sky beyond a steelbook edition": 171279,
+}
+
+
+from mailroom.verticals.game_catalog.game_groups import canonical_title
+
+
+def _title_match_key(normalized_title: str | None) -> str:
+    """Symbol-stripped key for TITLE_MATCH_OVERRIDES (normalized titles keep
+    '™'/colons, e.g. 'batman™: arkham knight')."""
+    s = (normalized_title or "").lower()
+    s = re.sub(r"[™®©&()\[\]:,;]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
 @dataclass
@@ -488,6 +631,17 @@ def _clean_catalog_title(title: str) -> str:
     t = title.strip()
     t = re.sub(_MORE_ITEMS_RE, "", t)
     t = re.sub(r"\s*\(\s*(?:downloadable\s+)?(?:full\s+)?game\s*\)\s*$", "", t, flags=re.IGNORECASE)
+    # size-note parenthetical: '(Full Game 128 MB)' / '(Full Game 979 MB)'
+    t = re.sub(
+        r"\s*\(\s*(?:downloadable\s+)?(?:full\s+)?game\s+[\d.,]+\s*(?:kb|mb|gb)\s*\)\s*$",
+        "", t, flags=re.IGNORECASE,
+    )
+    # retailer-exclusive marker ('Secret of Mana - PlayStation 4 GameStop
+    # Exclusive') — display-only noise, the game title is just 'Secret of Mana'.
+    t = re.sub(
+        r"\s*[-–—]?\s*(?:gamestop|best buy|amazon|target|walmart|eb games|playstation store)\s+exclusive\s*$",
+        "", t, flags=re.IGNORECASE,
+    )
     # One PS platform token: 'playstation 5', 'ps4', 'playstation 4 & playstation 5'.
     # (A lone 'ps?'+digit covers the bare 'ps4'/'p5' forms; the full word is its
     # own alternative so 'PlayStation 5' is not mis-parsed as 'ps' + '5'.)
@@ -665,6 +819,72 @@ def apply_catalog_repairs(conn) -> RepairReport:
                 f"pinned IGDB {gid} (was {r['igdb_id']}) — ambiguous short title",
             )
             report.rematched.append({"id": r["id"], "title": r["title"], "igdb_id": gid})
+
+    # 4b) receipt rows without a content id pinned by cleaned title (e.g.
+    #     'Batman™: Arkham Knight (Game)' -> base game, not a skin DLC).
+    for r in conn.execute(
+        "SELECT * FROM owned_games WHERE is_owned = 1"
+    ).fetchall():
+        gid = TITLE_MATCH_OVERRIDES.get(_title_match_key(r["normalized_title"]))
+        if not gid or r["igdb_id"] == gid:
+            continue
+        conn.execute(
+            """INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title)
+               VALUES (?, ?, 'manual', ?)""",
+            (r["id"], gid, r["title"]),
+        )
+        try:
+            conn.execute("UPDATE owned_games SET igdb_id = ?, updated_at = datetime('now') WHERE id = ?", (gid, r["id"]))
+        except sqlite3.IntegrityError:
+            from mailroom.verticals.game_catalog.dedup import merge_group
+
+            other = conn.execute(
+                """SELECT * FROM owned_games
+                   WHERE is_owned = 1 AND igdb_id = ? AND platform = ? AND format = ? AND id != ?""",
+                (gid, r["platform"], r["format"], r["id"]),
+            ).fetchone()
+            if other:
+                merge_group(conn, [r, other])
+            else:
+                raise
+        _audit(
+            conn, r["id"], r["title"], "rematch_by_title",
+            f"pinned IGDB {gid} (was {r['igdb_id']}) — IGDB search surfaced a DLC/skin instead of the base game",
+        )
+        report.rematched.append({"id": r["id"], "title": r["title"], "igdb_id": gid})
+
+    # 4c) collection bundles split into their member games (Batman: Arkham
+    #     Collection, BioShock: The Collection, Shadowrun Trilogy, Hotline
+    #     Miami Collection).
+    for coll_igdb, members in COLLECTION_SPLITS.items():
+        rows = conn.execute(
+            "SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id = ?", (coll_igdb,)
+        ).fetchall()
+        # title-substring fallback: match rows whose igdb_id is NULL / differs
+        # from the key (a collection row may be unmatched in a given DB).
+        for frag in COLLECTION_TITLES.get(coll_igdb, []):
+            like = f"%{frag.lower()}%"
+            rows += conn.execute(
+                """SELECT * FROM owned_games WHERE is_owned = 1
+                   AND (igdb_id IS NULL OR igdb_id != ?) AND LOWER(title) LIKE ?""",
+                (coll_igdb, like),
+            ).fetchall()
+            # canonical-key fallback: match even when raw title characters
+            # differ (non-breaking space, dash, ™ etc.) by comparing the
+            # normalized grouping key (e.g. 'Batman: Arkham Collection (Full
+            # Game and Add-On Content)' -> 'batman: arkham collection').
+            canon = canonical_title(frag)
+            for r in conn.execute(
+                "SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id IS NULL"
+            ).fetchall():
+                if canonical_title(r["normalized_title"]) == canon:
+                    rows.append(r)
+        seen: set[int] = set()
+        for r in rows:
+            if r["id"] in seen:
+                continue
+            seen.add(r["id"])
+            _split_collection(conn, r, members, report)
 
     # 5) wrong-IGDB-match jam (Valkyria Chronicles 4 + Remastered in one row).
     _split_valkyria_jam(conn, report)

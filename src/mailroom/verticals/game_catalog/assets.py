@@ -29,6 +29,7 @@ from mailroom.clients import (
     recover_webview_html,
 )
 from mailroom.db import (
+    checkpoint_wal,
     connect,
     enqueue_review,
     get_credential,
@@ -685,6 +686,7 @@ def owned_games(context: AssetExecutionContext) -> None:
             },
         )
         added += 1 if game_id else 0
+    checkpoint_wal(conn)
     conn.close()
     context.log.info(f"owned_games: {added} rows upserted")
 
@@ -881,7 +883,8 @@ def _pick_igdb_result(title: str, results: list[dict], platform: str, term: str 
     if not tokens:
         return None
     single = len(tokens) == 1
-    candidates = []
+    forward: list[dict] = []  # term appears in the name (base game / DLC shadowing)
+    reverse: list[dict] = []  # name is a subset of the term's words (receipt title carries extra words)
     for r in results:
         name = r.get("name") or ""
         name_tokens = _igdb_search_tokens(_igdb_norm(name))
@@ -895,18 +898,64 @@ def _pick_igdb_result(title: str, results: list[dict], platform: str, term: str 
                 # the term (or its space-less form). Ambiguous common-word
                 # titles stay unmatched (review).
                 continue
-            candidates.append(r)
+            forward.append(r)
         elif not single and name_tokens <= tokens:  # reverse: name is a subset of the title's words
-            candidates.append(r)
-    if not candidates:
-        return None
-    return next((r for r in candidates if _igdb_platform_matches(r.get("platforms") or [], platform)), candidates[0])
+            reverse.append(r)
+    if forward:
+        # Among forward-containment candidates, prefer the CLOSEST name: when a
+        # base game and its DLC/spin-off both contain the term ('Crypt of the
+        # NecroDancer' vs 'Crypt of the NecroDancer: Synchrony'), IGDB ranks the
+        # newer DLC first, but the SHORTEST normalized name is the base game.
+        # Platform preference still dominates (RE4 2005/2011/2023 class); name
+        # length is the tie-break among platform-matching (or all) candidates.
+        def _closeness(r: dict) -> tuple[bool, int]:
+            n = len(_igdb_search_tokens(_igdb_norm(r.get("name") or "")))
+            return (not _igdb_platform_matches(r.get("platforms") or [], platform), n)
+        return min(forward, key=_closeness)
+    if reverse:
+        return next((r for r in reverse if _igdb_platform_matches(r.get("platforms") or [], platform)), reverse[0])
+    return None
+
+
+def _igdb_match_scope(only: list[str]) -> tuple[str, list]:
+    """Build a SQL scope clause + params restricting IGDB matching to a subset.
+
+    Each `only` entry matches an owned_games.id, a psn_content_id, OR a
+    case-insensitive substring of the title. Empty list => no restriction
+    (match ALL eligible rows). Used by igdb_matches so a targeted re-match can
+    heal a handful of wrong picks (Crypt of the NecroDancer -> Synchrony)
+    without a full ~15-30 min re-match of every row.
+    """
+    groups: list[str] = []
+    params: list = []
+    for val in only:
+        v = str(val).strip()
+        if not v:
+            continue
+        groups.append("(id = ? OR psn_content_id = ? OR LOWER(title) LIKE ?)")
+        params += [int(v) if v.isdigit() else 0, v, f"%{v.lower()}%"]
+    if not groups:
+        return "", []
+    return "AND (" + " OR ".join(groups) + ")", params
 
 
 @asset(
     deps=[owned_games],
     required_resource_keys={"db_url", "igdb"},
-    config_schema={"recheck": Field(bool, default_value=False)},
+    config_schema={
+        "recheck": Field(bool, default_value=False),
+        "only": Field(
+            [str],
+            default_value=[],
+            description=(
+                "Restrict matching/re-matching to only these owned rows. Each entry "
+                "matches an owned_games.id, a psn_content_id, or a case-insensitive "
+                "substring of the title. Empty = all rows. Combine with recheck=true "
+                "to re-match just a subset (e.g. heal one wrong pick without a full "
+                "~15-30 min re-match)."
+            ),
+        ),
+    },
 )
 def igdb_matches(context: AssetExecutionContext) -> None:
     """Match owned games to IGDB ids (paced).
@@ -919,17 +968,29 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     Config `recheck: true` re-matches EVERY row (clears igdb_id first) so the
     improved exact-name/platform matcher heals wrong picks (Elden Ring ->
     Nightreign class) — trigger from the UI (Materialize with config) or via
-    the catalog_recheck job.
+    the catalog_recheck job. Config `only: [..]` narrows the pass to a subset
+    of owned rows (by id / psn_content_id / title substring) — a scoped
+    re-match that heals just the given titles without re-processing the whole
+    catalog.
     """
     conn = connect(context.resources.db_url)
     init_db(conn)
     igdb = context.resources.igdb
+    only = [o for o in (context.op_config.get("only") or []) if str(o).strip()]
+    scope_sql, scope_params = _igdb_match_scope(only)
     if context.op_config.get("recheck"):
-        # re-match everything: clear igdb_id so the loop below re-processes all
-        # rows with the exact-name/platform matcher (heals wrong picks)
-        conn.execute("UPDATE owned_games SET igdb_id = NULL, updated_at = datetime('now') WHERE igdb_id IS NOT NULL")
+        # re-match the (optionally scoped) rows: clear igdb_id so the loop below
+        # re-processes them with the exact-name/platform matcher (heals wrong picks)
+        conn.execute(
+            f"UPDATE owned_games SET igdb_id = NULL, updated_at = datetime('now') "
+            f"WHERE igdb_id IS NOT NULL {scope_sql}",
+            scope_params,
+        )
         conn.commit()
-    rows = conn.execute("SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id IS NULL").fetchall()
+    rows = conn.execute(
+        f"SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id IS NULL {scope_sql}",
+        scope_params,
+    ).fetchall()
     matched = unmatched = 0
     for row in rows:
         gid, matched_title, method = None, None, None
@@ -996,6 +1057,7 @@ def igdb_matches(context: AssetExecutionContext) -> None:
         else:
             unmatched += 1
     conn.commit()
+    checkpoint_wal(conn)
     conn.close()
     context.log.info(f"igdb_matches: {matched} matched, {unmatched} unmatched")
 
@@ -1014,6 +1076,7 @@ def dedupe_owned_games(context: AssetExecutionContext) -> None:
     conn = connect(context.resources.db_url)
     init_db(conn)
     report = dedup.dedupe_owned_games(conn)
+    checkpoint_wal(conn)
     conn.close()
     context.log.info(
         f"dedupe_owned_games: {report.groups} groups merged, {report.retired} rows retired, "
@@ -1035,6 +1098,7 @@ def catalog_quality_repairs(context: AssetExecutionContext) -> None:
     conn = connect(context.resources.db_url)
     init_db(conn)
     report = apply_catalog_repairs(conn)
+    checkpoint_wal(conn)
     conn.close()
     context.log.info(
         f"catalog_quality_repairs: retired {len(report.retired)}, split {len(report.split)}, "
@@ -1093,6 +1157,7 @@ def game_metadata(context: AssetExecutionContext) -> None:
                 (plat, gid),
             )
     conn.commit()
+    checkpoint_wal(conn)
     conn.close()
     context.log.info(f"game_metadata: fetched {fetched}")
 
@@ -1204,6 +1269,7 @@ def game_covers(context: AssetExecutionContext) -> None:
         )
         fetched += 1
     conn.commit()
+    checkpoint_wal(conn)
     conn.close()
     context.log.info(
         f"game_covers: {fetched} fetched, {skipped} cached, {missing} missing(404), {failed} failed"
@@ -1276,6 +1342,7 @@ def catalog_games(context: AssetExecutionContext) -> None:
             )
             reparented += len(ids)
     conn.commit()
+    checkpoint_wal(conn)
     conn.close()
     report.reparented = reparented
     context.log.info(

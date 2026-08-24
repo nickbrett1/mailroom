@@ -385,6 +385,20 @@ def connect(database_url: str | None = None) -> sqlite3.Connection:
     return conn
 
 
+def checkpoint_wal(conn: sqlite3.Connection) -> None:
+    """Fold the WAL into the main DB file so read-only consumers that mount the
+    DB with `:ro` (pshelf) — which can't coordinate the `-wal`/`-shm` files —
+    see committed changes. In WAL mode recent writes live in the `-wal` file
+    until a checkpoint; a read-only connection falls back to the stale main
+    `.db` file otherwise. TRUNCATE resets the WAL so a later ro reader reads the
+    (now current) main file. Call after commit() in write assets. Best-effort:
+    fails silently if a concurrent writer is mid-transaction."""
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.OperationalError:
+        pass
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Create schema if not present, plus lightweight column migrations and the
     dedup guard index (dedupes existing duplicates first — catalog-dedup-fix).

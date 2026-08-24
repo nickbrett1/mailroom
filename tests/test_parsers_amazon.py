@@ -230,6 +230,55 @@ Total
     assert ps[0].items[0].title == "Resident Evil 4 - PS5"
 
 
+def test_order_details_template_parses_item_from_body():
+    """'Order details / View your item' template puts the item ABOVE the
+    'Sold by: Amazon.com' line (itself above 'Order #'), so the block split
+    never sees it. The parser must extract the clean title from the body —
+    even when the subject is a mangled duplicate."""
+    body = """Order details
+Beyond A Steel Sky: Beyond A SteelBook Edition (PS5)
+Beyond A Steel Sky: Beyond A SteelBook Edition (PS5)Beyond A Steel Sky: Beyond A Stee…
+Sold by: Amazon.com
+$19.99
+View your item
+Order summary
+Order placed December 26, 2022
+Order # 113-7134038-7289042
+Grand Total:
+$21.76
+"""
+    ps = parse_amazon_receipt(
+        body,
+        message_id="m1",
+        subject='Your Amazon.com order of "Beyond A Steel Sky: Beyond A SteelBook Edition (PS5)Beyond A Steel Sky: Beyond A Stee…".',
+    )
+    assert len(ps) == 1
+    assert ps[0].order_number == "113-7134038-7289042"
+    assert ps[0].items[0].title == "Beyond A Steel Sky: Beyond A SteelBook Edition (PS5)"
+
+
+def test_order_details_template_third_party_seller():
+    """The 'Order details' template also ships with third-party sellers
+    ('Sold by: European Rarities') — the item must still be extracted from the
+    body, and a duplicate title collapses to the clean one."""
+    body = """Order details
+Evergate PS5 (PS5)
+Evergate PS5 (PS5)Evergate PS5 (PS5)
+Sold by: European Rarities
+$12.99
+View your item
+Order summary
+Order placed June 28, 2023
+Order # 111-5694915-7906620
+Grand Total:
+$14.14
+"""
+    ps = parse_amazon_receipt(body, message_id="m2")
+    assert len(ps) == 1
+    assert ps[0].order_number == "111-5694915-7906620"
+    assert ps[0].items[0].title == "Evergate PS5 (PS5)"
+
+
 def test_cancelled_order_never_becomes_a_purchase():
     """A cancellation email must not produce a catalog fact — the subject
     fallback used to swallow the whole tail ('...has been canceled') and the

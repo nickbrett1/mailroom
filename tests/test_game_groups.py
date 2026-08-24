@@ -14,6 +14,7 @@ from mailroom.verticals.game_catalog import assets
 from mailroom.verticals.game_catalog.game_groups import (
     build_games,
     canonical_title,
+    sortable_date,
 )
 from mailroom.verticals.game_catalog.parsers.psn import normalize_title
 
@@ -157,6 +158,50 @@ def test_build_groups_edition_suffix_and_roman_numeral():
     games, _ = build_games(rows)
     assert len(games) == 1
     assert games[0]["num_editions"] == 2
+
+
+def test_last_of_us_part2_remastered_collapses_with_part2():
+    """Part II Remastered is the same game as Part II — both rows collapse to
+    one card (the PS5 remaster is just the enhanced port)."""
+    assert canonical_title("the last of us part ii remastered") == "the last of us part 2"
+    assert canonical_title("the last of us part ii") == "the last of us part 2"
+    rows = [
+        {"id": 1, "title": "The Last of Us™ Part II", "normalized_title": "the last of us part ii",
+         "platform": "playstation 4", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 202503, "provenance": "psn_api:part2"},
+        {"id": 2, "title": "The Last of Us™ Part II Remastered", "normalized_title": "the last of us part ii remastered",
+         "platform": "playstation 5", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 26192, "provenance": "psn_api:part2remastered"},
+    ]
+    games, _ = build_games(rows)
+    assert len(games) == 1
+    assert games[0]["num_editions"] == 2
+    assert games[0]["platform"] == "playstation 4, playstation 5"
+
+
+def test_earliest_acquisition_normalized_for_sorting():
+    """Mixed-format purchase dates ('04/10/2026', '1/19/2023',
+    'November 23, 2023', ISO) normalize to YYYY-MM-DD so a game's earliest
+    purchase date sorts correctly (2026-04-10 must come AFTER 2023 dates)."""
+    assert sortable_date("04/10/2026") == "2026-04-10"
+    assert sortable_date("1/19/2023") == "2023-01-19"
+    assert sortable_date("November 23, 2023") == "2023-11-23"
+    assert sortable_date("2024-04-12T23:43:36Z") == "2024-04-12"
+    assert sortable_date("2021-11-21T04:08:56Z") == "2021-11-21"
+    assert sortable_date(None) is None
+    rows = [
+        {"id": 1, "title": "Blasphemous", "normalized_title": "blasphemous",
+         "platform": "playstation", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 1, "provenance": "r", "acquisition_date": "04/10/2026"},
+        {"id": 2, "title": "Limbo", "normalized_title": "limbo",
+         "platform": "playstation", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 2, "provenance": "r", "acquisition_date": "1/19/2023"},
+    ]
+    games, _ = build_games(rows)
+    earliest = {g["title"]: g["earliest_acquisition"] for g in games}
+    assert earliest["Blasphemous"] == "2026-04-10"
+    assert earliest["Limbo"] == "2023-01-19"
+    assert earliest["Blasphemous"] > earliest["Limbo"]
 
 
 def test_build_groups_more_edition_variants():
