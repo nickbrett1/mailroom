@@ -333,3 +333,43 @@ def test_catalog_games_asset_builds_and_reparents():
         (g["game_id"],),
     ).fetchone()["n"] == 2
     conn.close()
+
+
+def test_platform_and_psvr2_overrides():
+    """Curated PLATFORM_OVERRIDES / PSVR2_OVERRIDES pin the display platform for
+    cross-gen (PS4+PS5) and PS Vita games that auto-backfill can't pin, and set
+    the is_psvr2 flag; non-overridden games are untouched."""
+    from mailroom.verticals.game_catalog.game_groups import (
+        PLATFORM_OVERRIDES,
+        PSVR2_OVERRIDES,
+    )
+
+    def _r(rid, title, platform, igdb_id):
+        return {
+            "id": rid, "title": title, "normalized_title": normalize_title(title),
+            "platform": platform, "format": "digital", "ownership_class": "purchased",
+            "retailer": None, "order_number": None, "item_id": None, "condition": None,
+            "psn_content_id": None, "igdb_id": igdb_id, "acquisition_date": None,
+            "price": None, "source": "psn_api", "source_ref": None, "status": "owned",
+            "is_owned": 1, "provenance": None,
+        }
+
+    # cross-gen / vita / psvr2 games currently stuck on generic 'playstation'
+    rows = [
+        _r(1, "Far Cry 6", "playstation", 105897),
+        _r(2, "Persona 4 Golden", "playstation", 2770),
+        _r(3, "Resident Evil Village", "playstation", 102584),
+        # control — not in the override map
+        _r(4, "Uncharted 4", "playstation", 14731),
+    ]
+    games, _ = build_games(rows)
+    by_title = {g["title"]: g for g in games}
+    assert by_title["Far Cry 6"]["platform"] == "playstation 5"
+    assert by_title["Persona 4 Golden"]["platform"] == "playstation vita"
+    assert by_title["Resident Evil Village"]["platform"] == "playstation 5"
+    assert by_title["Resident Evil Village"]["is_psvr2"] == 1
+    # control is left generic (no auto signal, not overridden)
+    assert by_title["Uncharted 4"]["platform"] == "playstation"
+    assert by_title["Uncharted 4"]["is_psvr2"] == 0
+    assert canonical_title("resident evil 4") in PSVR2_OVERRIDES
+    assert PLATFORM_OVERRIDES["resident evil village"] == "playstation 5"
