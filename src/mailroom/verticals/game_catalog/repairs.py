@@ -168,6 +168,29 @@ COLLECTION_SPLITS: dict[int, list[dict]] = {
         {"title": "Uncharted 4: A Thief's End", "igdb_id": 7331, "platform": "playstation 5"},
         {"title": "Uncharted: The Lost Legacy", "igdb_id": 26193, "platform": "playstation 5"},
     ],
+    393638: [  # Metal Gear Solid: Master Collection Vol. 1 (PS5, 2023). One
+               # bundle hiding three classic games — break out each MGS so they
+               # get their own card/cover. The member ids are the canonical
+               # base entries (MGS 1998 / MGS2 / MGS3), not the 'Master
+               # Collection Version' sub-entries.
+        {"title": "Metal Gear Solid", "igdb_id": 375, "platform": "playstation 5"},
+        {"title": "Metal Gear Solid 2: Sons of Liberty", "igdb_id": 376, "platform": "playstation 5"},
+        {"title": "Metal Gear Solid 3: Snake Eater", "igdb_id": 379, "platform": "playstation 5"},
+    ],
+    # Final Fantasy I-VI (Anniversary Edition / Pixel Remaster collection).
+    # The owned row ('FINAL FANTASY I-VI Collection Anniversary Edition') is
+    # currently UNMATCHED (igdb_id NULL — no clean IGDB bundle entry), so it is
+    # split by title (COLLECTION_TITLES below), never by a real igdb_id. The
+    # key 0 is a sentinel: `WHERE igdb_id = 0` matches nothing, keeping the
+    # split title-only (a guessed id could falsely match an unrelated game).
+    0: [
+        {"title": "Final Fantasy", "igdb_id": 158980, "platform": "playstation 5"},
+        {"title": "Final Fantasy II", "igdb_id": 158981, "platform": "playstation 5"},
+        {"title": "Final Fantasy III", "igdb_id": 158982, "platform": "playstation 5"},
+        {"title": "Final Fantasy IV", "igdb_id": 158983, "platform": "playstation 5"},
+        {"title": "Final Fantasy V", "igdb_id": 158984, "platform": "playstation 5"},
+        {"title": "Final Fantasy VI", "igdb_id": 158985, "platform": "playstation 5"},
+    ],
 }
 
 
@@ -182,6 +205,15 @@ COLLECTION_TITLES: dict[int, list[str]] = {
     99733: ["hotline miami collection"],
     106988: ["persona dancing: endless night collection"],
     168670: ["uncharted: legacy of thieves collection"],
+    393638: ["metal gear solid master collection"],
+    # Final Fantasy collection split is title-driven (igdb_id is NULL / key 0):
+    # both the full Anniversary Edition title and the generic 'final fantasy
+    # pixel remaster' fragment catch the physical + digital bundles.
+    0: [
+        "final fantasy i-vi collection anniversary edition",
+        "final fantasy pixel remaster",
+        "final fantasy i-vi collection",
+    ],
 }
 
 
@@ -272,6 +304,15 @@ TITLE_MATCH_OVERRIDES = {
     # 113-7134038-7289042) -> the SteelBook Edition (171279), which IGDB search
     # can't surface from the noisy Amazon title.
     "beyond a steel sky beyond a steelbook edition": 171279,
+    # 'Subnautica' (base game, 2018) — the matcher has been landing it on
+    # 'Subnautica: Below Zero' (107315), so the base game's card shows the
+    # Below Zero cover. Pin it to its own IGDB entry (9254) so each game keeps
+    # its own artwork.
+    "subnautica": 9254,
+    # 'Synth Riders' — IGDB search can surface a PS5-only re-listing (372492)
+    # ahead of the canonical entry. Pin to the base game (105333) so the row
+    # carries the IGDB platform-390 (PSVR2) signal.
+    "synth riders": 105333,
 }
 
 
@@ -722,9 +763,41 @@ def _apply_title_aliases(conn, report: RepairReport) -> None:
             report.merged.append({"id": r["id"], "title": canon["title"], "source": "title_alias"})
 
 
+def _apply_crossgen_platform(conn, report: RepairReport) -> None:
+    """Pin rows whose title advertises BOTH PS4 and PS5 to PlayStation 5.
+
+    A cross-gen title ("One Hand Clapping PS4 & PS5") is a release that ships
+    on PS5; the classifier used to fall back to the generic 'playstation' for
+    these, so already-ingested rows are stuck generic. Mirrors the classifier
+    rule (both tokens -> PS5); idempotent.
+    """
+    rows = conn.execute(
+        """SELECT * FROM owned_games WHERE is_owned = 1
+           AND (platform IN ('playstation', 'ps') OR platform IS NULL)"""
+    ).fetchall()
+    for r in rows:
+        text = (r["title"] or "").lower()
+        if re.search(r"\bps4\b", text) and re.search(r"\bps5\b", text):
+            conn.execute(
+                """UPDATE owned_games SET platform = 'playstation 5', updated_at = datetime('now')
+                   WHERE id = ?""",
+                (r["id"],),
+            )
+            _audit(
+                conn, r["id"], r["title"], "crossgen_platform_ps5",
+                "title advertises PS4 & PS5 — pinned to PlayStation 5",
+            )
+            report.cleaned.append({"id": r["id"], "title": r["title"], "reason": "crossgen_platform_ps5"})
+
+
 def apply_catalog_repairs(conn) -> RepairReport:
     """Idempotent repair pass over owned_games. Safe to re-run."""
     report = RepairReport()
+
+    # 0a) cross-gen platform FIRST (before title cleanup strips the 'PS4 & PS5'
+    #     suffix): a title advertising BOTH PS4 & PS5 is pinned to PS5 (the
+    #     classifier now does this at parse time; this heals old rows).
+    _apply_crossgen_platform(conn, report)
 
     # 0) title noise: strip '(Game)' / platform suffixes / ' and N more items'
     #    from stored titles and retire Vita-console hardware rows.

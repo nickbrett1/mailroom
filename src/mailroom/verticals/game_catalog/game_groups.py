@@ -270,6 +270,8 @@ PLATFORM_OVERRIDES: dict[int, str] = {
 PSVR2_OVERRIDES: set[int] = {
     132181,  # Resident Evil 4 (2023 remake)
     55163,   # Resident Evil Village
+    105333,  # Synth Riders (VR rhythm game — PSVR2; IGDB base entry carries platform 390,
+             # but pin it so the flag is robust to a stale payload / wrong-id match)
 }
 
 

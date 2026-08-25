@@ -81,6 +81,13 @@ def classify_item(title: str, platform_hint: str | None = None, variant: str | N
         if p in text:
             return Classification("non_playstation", platform=p, reason=f"platform keyword '{p}'")
 
+    # Both PS4 AND PS5 advertised ("One Hand Clapping PS4 & PS5", "Tinykin -
+    # PS4 & PS5"): a cross-gen release ships on PS5, so prefer PS5 over a
+    # single-token pick / the generic fallback. Checked before the single
+    # platform matchers so a '- PS4 & PS5' suffix doesn't snap to PS4.
+    if re.search(r"\bps4\b", text) and re.search(r"\bps5\b", text):
+        return Classification("playstation_game", platform="playstation 5", reason="ps4 & ps5 cross-gen")
+
     # PlayStation detection: suffix ' - playstation 5', '(ps5)', 'for playstation', variant 'PS5'.
     ps_match = re.search(r"(?:-|for)\s*(playstation\s*[45]|ps\s*[45]|psvita|vita|ps3)", text)
     paren_match = re.search(r"\(ps\s*([45])\)", text)

@@ -362,8 +362,9 @@ def test_platform_and_psvr2_overrides():
         _r(3, "Resident Evil Village", "playstation", 55163),
         _r(4, "Atari 50: The Anniversary Celebration", "playstation", 207018),
         _r(5, "Kingdom Hearts II", "playstation", 1221),
+        _r(6, "Synth Riders", "playstation", 105333),
         # control — not in the override map
-        _r(6, "Uncharted 4", "playstation", 14731),
+        _r(7, "Uncharted 4", "playstation", 14731),
     ]
     games, _ = build_games(rows)
     by_title = {g["title"]: g for g in games}
@@ -371,6 +372,7 @@ def test_platform_and_psvr2_overrides():
     assert by_title["Persona 4 Golden"]["platform"] == "playstation vita"
     assert by_title["Resident Evil Village"]["platform"] == "playstation 5"
     assert by_title["Resident Evil Village"]["is_psvr2"] == 1
+    assert by_title["Synth Riders"]["is_psvr2"] == 1
     # full catalog title still overridden via its igdb_id (the bug this fixes)
     assert by_title["Atari 50: The Anniversary Celebration"]["platform"] == "playstation 5"
     assert by_title["Kingdom Hearts II"]["platform"] == "playstation 4"

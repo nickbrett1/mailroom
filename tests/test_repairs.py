@@ -234,6 +234,100 @@ def test_splits_collection_merges_into_already_owned_member():
     conn.close()
 
 
+def test_pins_subnautica_to_its_own_game():
+    """'Subnautica' (base) was landing on the Below Zero IGDB entry, so the
+    base card showed Below Zero's cover. The title override pins it to its own
+    game (9254) so each game keeps its own artwork."""
+    conn, _ = _db()
+    base = _seed(
+        conn, title="Subnautica", platform="playstation 4",
+        source="psn_api", psn_content_id="UP4083-CUSA07147_00-SUBNAUTICA000000",
+        igdb_id=107315,  # wrongly matched to 'Subnautica: Below Zero'
+        provenance="psn_api:UP4083-CUSA07147_00-SUBNAUTICA000000",
+    )
+    report = apply_catalog_repairs(conn)
+    assert [r["id"] for r in report.rematched] == [base]
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (base,)).fetchone()
+    assert row["igdb_id"] == 9254  # IGDB 'Subnautica' (base game, 2018)
+    conn.close()
+
+
+def test_pins_synth_riders_to_base_game():
+    """'Synth Riders' pinned to the canonical base entry (105333), which is the
+    IGDB id that carries the platform-390 (PSVR2) signal — not the PS5-only
+    re-listing IGDB search can surface first."""
+    conn, _ = _db()
+    game = _seed(
+        conn, title="Synth Riders", platform="playstation 5",
+        source="psn_api", psn_content_id="UP4363-PPSA10201_00-SYNTHRIDERS00000",
+        igdb_id=372492,  # a PS5-only re-listing without platform 390
+        provenance="psn_api:UP4363-PPSA10201_00-SYNTHRIDERS00000",
+    )
+    report = apply_catalog_repairs(conn)
+    assert [r["id"] for r in report.rematched] == [game]
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (game,)).fetchone()
+    assert row["igdb_id"] == 105333  # IGDB 'Synth Riders' (base, has PSVR2 platform 390)
+    conn.close()
+
+
+def test_splits_metal_gear_solid_master_collection():
+    """'Metal Gear Solid: Master Collection Vol. 1' (one PS5 receipt) is
+    retired and broken into Metal Gear Solid / MGS2 / MGS3, each owned."""
+    conn, _ = _db()
+    coll = _seed(
+        conn, title="Metal Gear Solid: Master Collection", platform="playstation 5",
+        format="physical", source="amazon", igdb_id=393638,
+        order_number="114-0000000-0000000", price="$59.99",
+        provenance="amazon:114-0000000-0000000:Metal Gear Solid: Master Collection",
+    )
+    apply_catalog_repairs(conn)
+    assert conn.execute("SELECT * FROM owned_games WHERE id = ?", (coll,)).fetchone()["is_owned"] == 0
+    ids = {r["igdb_id"] for r in conn.execute("SELECT igdb_id FROM owned_games WHERE is_owned = 1")}
+    assert 375 in ids and 376 in ids and 379 in ids  # MGS1 / MGS2 / MGS3
+    conn.close()
+
+
+def test_crossgen_title_pinned_to_ps5():
+    """A cross-gen receipt title advertising both PS4 and PS5 ('One Hand
+    Clapping PS4 & PS5') was classified as generic 'playstation'; the repair
+    pins it to PlayStation 5. Single-platform / concrete rows untouched."""
+    conn, _ = _db()
+    one_hand = _seed(
+        conn, title="One Hand Clapping PS4 & PS5", platform="playstation",
+        format="digital", source="psn_receipt", igdb_id=None,
+        provenance="psn_receipt:298438957255:0",
+    )
+    sonic = _seed(conn, title="Sonic Superstars PS4", platform="playstation",
+                  format="digital", source="psn_receipt", igdb_id=None,
+                  provenance="psn_receipt:111111111111:0")
+    report = apply_catalog_repairs(conn)
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (one_hand,)).fetchone()
+    assert row["platform"] == "playstation 5"
+    sonic_row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (sonic,)).fetchone()
+    assert sonic_row["platform"] == "playstation"  # single-platform — untouched
+    assert any(c["id"] == one_hand for c in report.cleaned)
+    conn.close()
+
+
+def test_splits_final_fantasy_i_vi_collection_by_title():
+    """'FINAL FANTASY I-VI Collection Anniversary Edition' (one physical
+    receipt, igdb_id NULL / unmatched) is split by TITLE into the six Pixel
+    Remaster games, each owned with its own IGDB id."""
+    conn, _ = _db()
+    coll = _seed(
+        conn, title="FINAL FANTASY I-VI Collection Anniversary Edition",
+        platform="playstation 5", format="physical", source="amazon",
+        igdb_id=None,  # unmatched — split is title-driven
+        order_number="112-0000000-0000000", price="$74.99",
+        provenance="amazon:112-0000000-0000000:FINAL FANTASY I-VI Collection Anniversary Edition",
+    )
+    apply_catalog_repairs(conn)
+    assert conn.execute("SELECT * FROM owned_games WHERE id = ?", (coll,)).fetchone()["is_owned"] == 0
+    ids = {r["igdb_id"] for r in conn.execute("SELECT igdb_id FROM owned_games WHERE is_owned = 1")}
+    assert {158980, 158981, 158982, 158983, 158984, 158985} <= ids  # FF I-VI Pixel Remaster
+    conn.close()
+
+
 def test_rematches_beyond_a_steel_sky_steelbook_by_title():
     """'Beyond A Steel Sky: Beyond A SteelBook Edition (PS5)' (Amazon order) is
     pinned to the SteelBook Edition (171279), which IGDB search can't surface

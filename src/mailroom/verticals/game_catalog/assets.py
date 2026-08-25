@@ -1361,8 +1361,19 @@ def catalog_games(context: AssetExecutionContext) -> None:
                 pass
     games, report = build_games([dict(r) for r in rows], metadata=metadata)
 
+    # Snapshot the previous canonical games so we can detect what's genuinely
+    # NEW this run (a new receipt / PS+ claim that produced a fresh game card)
+    # and push an ntfy notification (memos/game-catalog-notify). A previously
+    # empty store = the initial backfill, not a delta — skip then.
+    from mailroom.verticals.game_catalog.notify import _new_game_key, notify_new_games
+
+    prev = conn.execute("SELECT igdb_id, normalized_title, title FROM games").fetchall()
+    had_prior_games = bool(prev)
+    prev_keys = {_new_game_key(dict(r)) for r in prev}
+
     conn.execute("DELETE FROM games")
     reparented = 0
+    new_games: list[dict] = []
     for g in games:
         editions = json.loads(g["editions"])
         cur = conn.execute(
@@ -1386,10 +1397,21 @@ def catalog_games(context: AssetExecutionContext) -> None:
                 (gid, *ids),
             )
             reparented += len(ids)
+        if _new_game_key(g) not in prev_keys:
+            new_games.append(g)
     conn.commit()
     checkpoint_wal(conn)
     conn.close()
     report.reparented = reparented
+
+    # Best-effort ntfy push for the games that are new to the collection.
+    if new_games:
+        sent = notify_new_games(new_games, had_prior_games=had_prior_games)
+        context.log.info(
+            f"catalog_games: {len(new_games)} new game(s) added "
+            f"{'— ntfy sent' if sent else '— ntfy skipped/failed'}: "
+            + ", ".join(g["title"] for g in new_games)
+        )
     context.log.info(
         f"catalog_games: {report.games} games from {reparented} owned editions "
         f"({len(report.groups)} groups)"

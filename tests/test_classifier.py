@@ -67,3 +67,19 @@ def test_ps4_keyword_still_word_boundary():
     # Real PlayStation titles keep matching.
     c = classify_item("Sonic Superstars PS4")
     assert c.classification == "playstation_game"
+
+
+def test_crossgen_ps4_and_ps5_is_playstation_5():
+    """A title advertising BOTH PS4 and PS5 ('One Hand Clapping PS4 & PS5') is
+    a cross-gen release — classify it as PlayStation 5, not generic."""
+    c = classify_item("One Hand Clapping PS4 & PS5")
+    assert c.classification == "playstation_game"
+    assert c.platform == "playstation 5"
+    # separator variants
+    assert classify_item("Tinykin PS4/PS5").platform == "playstation 5"
+    assert classify_item("Psychonauts 2 PS4 - PS5").platform == "playstation 5"
+    # even a '- PS4 & PS5' suffix (which single-token logic would snap to PS4)
+    assert classify_item("Tinykin - PS4 & PS5").platform == "playstation 5"
+    # single-platform titles are untouched
+    assert classify_item("Sonic Superstars PS4").platform == "playstation"
+    assert classify_item("Sonic Superstars PS5").platform == "playstation"
