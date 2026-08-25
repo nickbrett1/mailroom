@@ -894,3 +894,44 @@ def test_igdb_matches_restore_fallback_collapses_duplicate_into_sibling():
     canon_row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (canon,)).fetchone()
     assert canon_row["igdb_id"] == 358669 and canon_row["is_owned"] == 1
     conn.close()
+
+
+def test_igdb_matches_restore_key_strips_raw_listing_noise():
+    """The restore-fallback runs BEFORE catalog_quality_repairs cleans titles, so
+    a fresh row can still carry raw listing noise — '(Downloadable Game)' or
+    ' and 1 more item'. _restore_identity_key must strip that so the manual pick
+    still matches (memos/7-unmatched: Invisible/Virginia/Diablo + LIMBO/Thumper)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    # manual record for Invisible, Inc. Console Edition -> igdb 6044
+    conn.execute(
+        """INSERT INTO owned_games(title, normalized_title, platform, format, ownership_class,
+               source, is_owned, igdb_id, provenance)
+           VALUES ('Invisible, Inc. Console Edition', 'invisible, inc. console edition',
+                   'playstation 4', 'digital', 'purchased', 'psn_api', 0, 6044, 'psn:inv')"""
+    )
+    orig = conn.execute("SELECT id FROM owned_games WHERE provenance='psn:inv'").fetchone()["id"]
+    conn.execute(
+        "INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title) VALUES (?,?,?,?)",
+        (orig, 6044, "manual", "Invisible, Inc. Console Edition"),
+    )
+    # fresh receipt row with RAW title (downloadable marker not yet cleaned)
+    conn.execute(
+        """INSERT INTO owned_games(title, normalized_title, platform, format, ownership_class,
+               source, is_owned, igdb_id, provenance)
+           VALUES ('Invisible, Inc. Console Edition (Downloadable Game)',
+                   'invisible, inc. console edition (downloadable game)',
+                   'playstation', 'digital', 'purchased', 'psn_receipt', 1, NULL, 'psn:new')"""
+    )
+    new = conn.execute("SELECT id FROM owned_games WHERE provenance='psn:new'").fetchone()["id"]
+    conn.commit()
+    conn.close()
+
+    stub = _StubIgdb(search={})
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (new,)).fetchone()
+    assert row["igdb_id"] == 6044, "raw '(Downloadable Game)' suffix must still match the manual pick"
+    conn.close()

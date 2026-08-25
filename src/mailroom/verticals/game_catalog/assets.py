@@ -784,10 +784,18 @@ def _restore_identity_key(title: str) -> str:
     different games don't collide. NOT used for auto-matching.
     """
     s = (title or "").lower()
+    # marketplace/listing noise that survives into RAW receipt titles (the
+    # restore-fallback runs BEFORE catalog_quality_repairs cleans them): the
+    # ' and N more item(s)' listing summary (with an optional wrapping quote),
+    # size-note / (Game) / (Downloadable Game) parentheticals, and (PS5) marks.
+    s = re.sub(r"(?:,?\s*\"?\s*)?and\s+\d+\s+more\s+items?\b", " ", s)
+    s = re.sub(r"\(\s*(?:downloadable\s+)?full\s+game\s+[\d.,]+\s*(?:kb|mb|gb)\s*\)", " ", s)
+    s = re.sub(r"\(\s*(?:downloadable\s+)?(?:full\s+)?game\s*\)", " ", s)
+    s = re.sub(r"\(\s*(?:playstation\s*[45]|ps\s*[45]|ps4|ps5)\s*\)", " ", s)
     s = re.sub(r"[™®©&()_'\"]", " ", s)
     s = re.sub(
         r"\b(?:playstation\s*[45]|ps4|ps5|ps vita|psvita|ps3|psp|for playstation\s*[45]|"
-        r"game|hits|exclusive|edition|remastered|remake|standard|deluxe|ultimate|special|"
+        r"game|hits|downloadable|exclusive|edition|remastered|remake|standard|deluxe|ultimate|special|"
         r"complete|definitive|version|bundle|amazon|best buy|gamestop|target|walmart)\b",
         " ", s,
     )
