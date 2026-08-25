@@ -78,13 +78,46 @@ def _price_is_zero(price: str | None) -> bool:
     return bool(m) and float(m.group()) == 0.0
 
 
+def _date_cursor(conn: sqlite3.Connection, raw_source: str, stored: str | None) -> str | None:
+    """Resolve a stored ingestion cursor to a DATE watermark for msgvault.
+
+    Cursors used to store the max msgvault message id (a number). msgvault ids
+    are NOT monotonic with send date, so an id cursor silently skipped messages
+    archived later with a low id but a recent date (memos/
+    gamestop-mgs-delta-backfill). Migrate a numeric cursor once to the newest
+    received_at already stored for the source — anything sent after it is
+    genuinely new — and re-store it as a date. Non-numeric (already date)
+    cursors pass through unchanged.
+    """
+    if stored and str(stored).isdigit():
+        row = conn.execute(
+            "SELECT MAX(received_at) AS w FROM raw_receipts WHERE source = ?", (raw_source,)
+        ).fetchone()
+        return row["w"] if row and row["w"] else None
+    return stored or None
+
+
+def _newer(newest: str | None, candidate: str | None) -> str | None:
+    """Return the lexically-greater ISO timestamp (or `newest` when equal)."""
+    if not candidate:
+        return newest
+    if not newest or candidate > newest:
+        return candidate
+    return newest
+
+
 @asset(required_resource_keys={"db_url", "msgvault"})
 def raw_psn_receipts(context: AssetExecutionContext) -> None:
-    """Fetch new PSN receipts from msgvault since the cursor and store raw."""
+    """Fetch new PSN receipts from msgvault since the cursor and store raw.
+
+    Cursor is a DATE watermark (msgvault's sent_at), not a message id — ids
+    aren't chronological with date, so an id cursor skipped low-id-but-recent
+    receipts (memos/gamestop-mgs-delta-backfill).
+    """
     conn = connect(context.resources.db_url)
     init_db(conn)
-    cursor = get_cursor(conn, "psn_receipts") or ""
     client = context.resources.msgvault
+    cursor = _date_cursor(conn, "psn_receipt", get_cursor(conn, "psn_receipts") or "")
     messages: list[dict] = []
     for sender in PSN_SENDERS:
         messages += client.search_messages(
@@ -93,12 +126,13 @@ def raw_psn_receipts(context: AssetExecutionContext) -> None:
             after=cursor or None,
             limit=200,
         )
-    # Newest-first across senders; dedupe + sort by id desc for cursor semantics.
+    # Newest-first across senders; dedupe by message id.
     messages = sorted({int(m["id"]): m for m in messages}.values(), key=lambda m: -int(m["id"]))
-    last = cursor
+    newest = cursor
     for m in messages:
         # search_messages returns metadata only; fetch the full body per message.
         detail = client.get_message(int(m["id"]))
+        newest = _newer(newest, detail.get("sent_at") or m.get("sent_at"))
         upsert_raw_receipt(
             conn,
             {
@@ -111,9 +145,8 @@ def raw_psn_receipts(context: AssetExecutionContext) -> None:
                 "body_html": detail.get("body_html") or "",
             },
         )
-        last = str(m["id"])
-    if last:
-        set_cursor(conn, "psn_receipts", last)
+    if newest:
+        set_cursor(conn, "psn_receipts", newest)
     conn.close()
 
 
@@ -364,17 +397,20 @@ def raw_retailer_receipts(context: AssetExecutionContext) -> None:
     client = context.resources.msgvault
     for source in RETAILER_SOURCES:
         cursor_key = f"raw_{source.name}"
-        cursor = get_cursor(conn, cursor_key) or ""
-        seen_max = int(cursor) if cursor.isdigit() else 0
+        # DATE watermark (msgvault sent_at) — ids aren't chronological with
+        # date, so an id cursor skipped low-id-but-recent emails (memos/
+        # gamestop-mgs-delta-backfill).
+        cursor = _date_cursor(conn, source.name, get_cursor(conn, cursor_key) or "")
+        newest = cursor
         for sender in source.senders:
             messages = client.search_messages(sender=sender, after=cursor or None, limit=200)
             for m in messages:
                 mid = int(m["id"])
-                seen_max = max(seen_max, mid)
                 subj = m.get("subject") or ""
                 if source.subject_contains and not any(s.lower() in subj.lower() for s in source.subject_contains):
                     continue
                 detail = client.get_message(mid)
+                newest = _newer(newest, detail.get("sent_at") or m.get("sent_at"))
                 body = detail.get("body_text") or ""
                 body_html = detail.get("body_html") or ""
                 if source.body == "recover" and not body_html:
@@ -391,8 +427,8 @@ def raw_retailer_receipts(context: AssetExecutionContext) -> None:
                         "body_html": body_html,
                     },
                 )
-        if seen_max:
-            set_cursor(conn, cursor_key, str(seen_max))
+        if newest:
+            set_cursor(conn, cursor_key, newest)
     conn.close()
 
 
@@ -600,8 +636,15 @@ def classified_game_items(context: AssetExecutionContext) -> None:
         if row["source"] == "psn_receipt":
             # PSN receipts are PlayStation by definition — the store only sells
             # PlayStation content. Title keywords ('steam', 'bundle', 'console',
-            # 'epic'…) must NOT reclassify them.
-            c = Classification("playstation_game", platform="playstation", reason="PSN receipt (platform implicit)")
+            # 'epic'…) must NOT reclassify them. But the title still carries a
+            # real PlayStation platform signal — 'One Hand Clapping PS4 & PS5
+            # (Game)' is cross-gen → PlayStation 5 — so prefer the classifier's
+            # concrete platform when it is PlayStation, falling back to the
+            # implicit generic 'playstation' only when the title names no
+            # specific platform. (Fixes cross-gen titles landing generic.)
+            c = classify_item(row["title"], platform_hint=row["platform"])
+            if c.classification != "playstation_game" or c.platform in (None, "playstation"):
+                c = Classification("playstation_game", platform="playstation", reason="PSN receipt (platform implicit)")
         else:
             c = classify_item(row["title"], platform_hint=row["platform"])
         conn.execute(

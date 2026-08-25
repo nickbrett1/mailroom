@@ -68,26 +68,32 @@ class MsgvaultClient:
         self,
         sender: str | None = None,
         subject: str | None = None,
-        after: str | None = None,  # cursor: message id
+        after: str | None = None,  # date bound (RFC3339 / YYYY-MM-DD)
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Newest-first messages from `sender` with an optional client-side
-        subject filter, paging until `limit` or the cursor id is reached."""
-        cursor: int | None = (
-            int(after) if after is not None and (isinstance(after, int) or str(after).isdigit()) else None
-        )
+        subject filter, paging until `limit` matches or the archive is exhausted.
+
+        `after` is a DATE/TIME watermark (RFC3339 or YYYY-MM-DD) forwarded to
+        msgvault's native `after` filter, so only messages SENT at/after it are
+        returned. This is the correct incremental cursor: msgvault's numeric
+        message id is NOT monotonic with send date — a receipt archived later
+        can carry a low id but a recent date, so an id-based cursor silently
+        skipped such messages (memos/gamestop-mgs-delta-backfill). A date
+        watermark catches a message by when it was sent regardless of its id.
+        """
         out: list[dict[str, Any]] = []
         page_offset = offset
         while True:
             params: dict[str, Any] = {"sort": "date", "direction": "desc", "offset": page_offset, "limit": 500}
             if sender:
                 params["sender"] = sender
+            if after:
+                params["after"] = str(after)
             page = self._get("/api/v1/messages/filter", **params)
             msgs = page.get("messages") or []
             for m in msgs:
-                if cursor is not None and m.get("id") is not None and int(m["id"]) <= cursor:
-                    return out  # reached the cursor; everything after is older
                 if subject and subject.lower() not in (m.get("subject") or "").lower():
                     continue
                 out.append(m)

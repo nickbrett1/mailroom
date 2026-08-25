@@ -108,6 +108,9 @@ _EDITION_MARKERS = [
     r"(?:[-–—:]?\s*)?special edition",
     r"(?:[-–—:]?\s*)?enhanced edition",
     r"(?:[-–—:]?\s*)?the collection",
+    # Never Alone: "Arctic Collection" is the same game as the base release
+    # (it bundles the base + the Foxtales DLC), so it folds onto "Never Alone".
+    r"(?:[-–—:]?\s*)?arctic collection",
     r"(?:[-–—:]?\s*)?new dimension",
     r"(?:[-–—:]?\s*)?ps vita",
     r"(?:[-–—:]?\s*)?\+\s+soca valley",   # Kayak VR: Mirage + Soča Valley (DLC)

@@ -47,21 +47,56 @@ def _filter_handler(messages: list[dict], page_size: int = 2):
     return handler
 
 
+def _capture_filter_handler(messages: list[dict], seen: list):
+    """Handler that records the query params on each request (for asserting
+    the date `after` bound is forwarded to msgvault)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, json={"count": len(messages), "has_more": False, "offset": 0, "limit": len(messages), "messages": messages})
+
+    return handler
+
+
 def test_search_subject_filter_client_side():
     client = _client(_filter_handler(MSGS))
     out = client.search_messages(sender="sony@email.sonyentertainmentnetwork.com", subject="Thank You For Your Purchase", limit=10)
     assert [m["id"] for m in out] == [30, 20]
 
 
-def test_cursor_stops_at_cursor_id():
-    client = _client(_filter_handler(MSGS))
-    out = client.search_messages(sender="sony@email.sonyentertainmentnetwork.com", after="20", limit=10)
-    assert [m["id"] for m in out] == [30]
+def test_after_forwarded_as_date_bound_to_msgvault():
+    # The `after` cursor is a DATE watermark forwarded to msgvault's native
+    # `after` filter — NOT a message-id stop. The client must not drop
+    # low-id-but-recent messages, so it never stops on message id.
+    seen: list = []
+    client = _client(_capture_filter_handler(MSGS, seen))
+    out = client.search_messages(sender="sony@email.sonyentertainmentnetwork.com", after="2025-12-19T00:00:00Z", limit=10)
+    assert seen and seen[0].get("after") == "2025-12-19T00:00:00Z"
+    # No client-side id cut-off: every message the API returns is kept.
+    assert [m["id"] for m in out] == [30, 20, 10]
 
 
-def test_cursor_accepts_int():
-    client = _client(_filter_handler(MSGS))
-    assert client.search_messages(sender="x@y.z", after=30, limit=10) == []
+def test_after_coerced_to_str_for_msgvault():
+    seen: list = []
+    client = _client(_capture_filter_handler(MSGS, seen))
+    client.search_messages(sender="x@y.z", after=20251219, limit=10)
+    assert seen and seen[0].get("after") == "20251219"
+
+
+def test_low_id_recent_date_not_dropped_by_high_cursor():
+    """Regression for the GameStop MGS Delta miss: a receipt archived with a
+    LOW id but a RECENT date must still be returned even when the stored cursor
+    (a date) is older than it. The client has no id-based cut-off."""
+    low_id_recent = [
+        {"id": 10172, "subject": "Thank you for your order!", "from_email": "notifications@info.gamestop.com", "sent_at": "2025-12-19T01:24:34Z"},
+        {"id": 42957, "subject": "Thank you for your order!", "from_email": "notifications@info.gamestop.com", "sent_at": "2023-06-23T01:51:22Z"},
+    ]
+    client = _client(_filter_handler(low_id_recent))
+    out = client.search_messages(
+        sender="notifications@info.gamestop.com",
+        after="2023-06-23T00:00:00Z",
+        limit=10,
+    )
+    assert [m["id"] for m in out] == [10172, 42957]
 
 
 def test_paging_across_pages():

@@ -574,3 +574,57 @@ def test_psn_library_item_to_game_keeps_ost_sounding_games():
     g = psn_library_item_to_game(game)
     assert g is not None
     assert g["title"] == "Lost"
+
+
+def test_crossgen_psn_receipt_classified_as_ps5():
+    """A PSN receipt whose title advertises BOTH PS4 & PS5 ('One Hand Clapping
+    PS4 & PS5 (Game)') must be classified as PlayStation 5 at parse time, not
+    the generic 'playstation' the psn_receipt branch used to force. Without
+    this the cross-gen signal is lost before it reaches owned_games, and the
+    game needs a manual platform override (memos: one-hand-clapping-ps5)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    conn.execute(
+        """INSERT INTO parsed_purchases(source, order_number, item_key, purchased_at, title, platform, price)
+           VALUES ('psn_receipt', '787095086925118', '787095086925118:0', '08/24/2026',
+                   'One Hand Clapping PS4 & PS5 (Game)', NULL, '$3.74')"""
+    )
+    conn.commit()
+    conn.close()
+
+    ctx = build_op_context(resources={"db_url": f"sqlite:///{db}", "msgvault": object(), "igdb": object()})
+    assets.classified_game_items(ctx)
+    assets.owned_games(ctx)
+
+    conn = connect(f"sqlite:///{db}")
+    c = conn.execute("SELECT platform FROM classified_game_items").fetchone()
+    assert c["platform"] == "playstation 5"
+    owned = conn.execute(
+        "SELECT platform, title FROM owned_games WHERE is_owned = 1 AND source = 'psn_receipt' AND order_number = '787095086925118'"
+    ).fetchone()
+    assert owned is not None
+    assert owned["platform"] == "playstation 5"
+    conn.close()
+
+
+def test_psn_receipt_without_platform_signal_stays_generic():
+    """A PSN receipt title that names no specific PlayStation platform keeps the
+    implicit generic 'playstation' (no false precision)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    conn.execute(
+        """INSERT INTO parsed_purchases(source, order_number, item_key, purchased_at, title, platform, price)
+           VALUES ('psn_receipt', '787095086925199', '787095086925199:0', '08/24/2026',
+                   'Journey (Game)', NULL, '$14.99')"""
+    )
+    conn.commit()
+    conn.close()
+
+    ctx = build_op_context(resources={"db_url": f"sqlite:///{db}", "msgvault": object(), "igdb": object()})
+    assets.classified_game_items(ctx)
+    conn = connect(f"sqlite:///{db}")
+    c = conn.execute("SELECT platform FROM classified_game_items").fetchone()
+    assert c["platform"] == "playstation"
+    conn.close()

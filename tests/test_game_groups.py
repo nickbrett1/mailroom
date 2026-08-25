@@ -53,6 +53,35 @@ def test_edition_groups_map_to_base():
     assert canonical_title("alien isolation") == "alien isolation"
 
 
+def test_never_alone_arctic_collection_folds_onto_never_alone():
+    """'Never Alone Arctic Collection (Full Game and Add-On Content)' is the
+    same game as 'Never Alone' (base + Foxtales DLC) — different IGDB entries
+    and titles — so they collapse into ONE card with 2 editions."""
+    assert canonical_title("never alone arctic collection") == "never alone"
+    assert canonical_title("never alone arctic collection (full game and add-on content)") == "never alone"
+    rows = [
+        {"id": 1, "title": "Never Alone", "normalized_title": "never alone",
+         "platform": "playstation 4", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 273575, "price": None, "acquisition_date": None,
+         "provenance": "psn_api:UP2159-CUSA01305_00-B000000000001769"},
+        {"id": 2, "title": "Never Alone Arctic Collection (Full Game and Add-On Content)",
+         "normalized_title": "never alone arctic collection (full game and add-on content)",
+         "platform": "playstation 4", "format": "digital", "ownership_class": "purchased",
+         "igdb_id": 46702, "price": "$3.59", "acquisition_date": "04/08/2023",
+         "provenance": "psn_receipt:414348861650:0"},
+    ]
+    games, report = build_games(rows)
+    assert len(games) == 1
+    g = games[0]
+    assert g["normalized_title"] == "never alone"
+    assert g["title"] == "Never Alone"  # base edition wins the display title
+    assert g["igdb_id"] == 273575
+    assert g["num_editions"] == 2
+    editions = json.loads(g["editions"])
+    assert {e["title"] for e in editions} == {"Never Alone", "Never Alone Arctic Collection (Full Game and Add-On Content)"}
+    assert report.games == 1
+
+
 def test_build_games_consolidates_editions():
     """Two editions of Alien Isolation (base + 'The Collection') — different
     IGDB entries and titles — collapse into ONE game with 2 editions."""
