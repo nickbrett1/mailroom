@@ -62,7 +62,7 @@ def test_never_alone_arctic_collection_folds_onto_never_alone():
     rows = [
         {"id": 1, "title": "Never Alone", "normalized_title": "never alone",
          "platform": "playstation 4", "format": "digital", "ownership_class": "purchased",
-         "igdb_id": 273575, "price": None, "acquisition_date": None,
+         "igdb_id": 7618, "price": None, "acquisition_date": None,
          "provenance": "psn_api:UP2159-CUSA01305_00-B000000000001769"},
         {"id": 2, "title": "Never Alone Arctic Collection (Full Game and Add-On Content)",
          "normalized_title": "never alone arctic collection (full game and add-on content)",
@@ -75,7 +75,7 @@ def test_never_alone_arctic_collection_folds_onto_never_alone():
     g = games[0]
     assert g["normalized_title"] == "never alone"
     assert g["title"] == "Never Alone"  # base edition wins the display title
-    assert g["igdb_id"] == 273575
+    assert g["igdb_id"] == 7618
     assert g["num_editions"] == 2
     editions = json.loads(g["editions"])
     assert {e["title"] for e in editions} == {"Never Alone", "Never Alone Arctic Collection (Full Game and Add-On Content)"}

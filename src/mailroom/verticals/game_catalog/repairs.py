@@ -304,6 +304,10 @@ TITLE_MATCH_OVERRIDES = {
     # 113-7134038-7289042) -> the SteelBook Edition (171279), which IGDB search
     # can't surface from the noisy Amazon title.
     "beyond a steel sky beyond a steelbook edition": 171279,
+    # 'Never Alone' — IGDB has a separate/misleading entry 273575 ('Never Alone')
+    # carrying incorrect cover art (black background with red text). Pin to the
+    # canonical entry 7618 ('Never Alone: Kisima Ingitchuna') for the authentic artwork.
+    "never alone": 7618,
     # 'Subnautica' (base game, 2018) — the matcher has been landing it on
     # 'Subnautica: Below Zero' (107315), so the base game's card shows the
     # Below Zero cover. Pin it to its own IGDB entry (9254) so each game keeps

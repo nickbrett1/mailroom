@@ -270,6 +270,24 @@ def test_pins_synth_riders_to_base_game():
     conn.close()
 
 
+def test_pins_never_alone_to_canonical_entry():
+    """'Never Alone' was matching IGDB 273575 ('Never Alone'), which carries
+    bogus/placeholder art (black background with red text). Pinned to the
+    canonical entry 7618 ('Never Alone: Kisima Ingitchuna') for the authentic cover."""
+    conn, _ = _db()
+    game = _seed(
+        conn, title="Never Alone", platform="playstation 4",
+        source="psn_api", psn_content_id="UP2159-CUSA01305_00-B000000000001769",
+        igdb_id=273575,  # wrong/duplicate IGDB entry with bogus art
+        provenance="psn_api:UP2159-CUSA01305_00-B000000000001769",
+    )
+    report = apply_catalog_repairs(conn)
+    assert [r["id"] for r in report.rematched] == [game]
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (game,)).fetchone()
+    assert row["igdb_id"] == 7618  # IGDB 'Never Alone: Kisima Ingitchuna'
+    conn.close()
+
+
 def test_splits_metal_gear_solid_master_collection():
     """'Metal Gear Solid: Master Collection Vol. 1' (one PS5 receipt) is
     retired and broken into Metal Gear Solid / MGS2 / MGS3, each owned."""
