@@ -26,6 +26,7 @@ from mailroom.verticals.game_catalog.parsers.larian import parse_larian_receipt
 from mailroom.verticals.game_catalog.parsers.mercari import parse_mercari_receipt
 from mailroom.verticals.game_catalog.parsers.shopify import parse_shopify_receipt
 from mailroom.verticals.game_catalog.parsers.target import parse_target_receipt
+from mailroom.verticals.game_catalog.parsers.walmart import parse_walmart_receipt
 from mailroom.verticals.game_catalog.parsers.woot import parse_woot_receipt
 
 
@@ -92,6 +93,14 @@ RETAILER_SOURCES: list[RetailerSource] = [
         senders=["orders@oe.target.com", "orders@oe1.target.com", "orders@target.com"],
         parser=parse_target_receipt,
         subject_contains=["Thanks for shopping with us"],
+    ),
+    RetailerSource(
+        name="walmart",
+        # Receipt facts come from order confirmations + arrivals (the item +
+        # price are inline). Shipped/tracking emails carry no price -> ignored.
+        senders=["help@walmart.com"],
+        parser=parse_walmart_receipt,
+        subject_contains=["thanks for your order", "items from your order", "your package arrived"],
     ),
     RetailerSource(
         name="mercari",
