@@ -1083,7 +1083,16 @@ def igdb_matches(context: AssetExecutionContext) -> None:
                 (_gid, _r["platform"], _r["format"], _r["id"]),
             ).fetchone()
             if _dup:
-                continue  # already claimed by an owned sibling -> dedup will collapse
+                # The SAME game is already owned as (igdb_id, platform, format)
+                # by a sibling. Setting igdb_id here would collide; dedup only
+                # merges matched-with-matched (this row is unmatched), so it
+                # would stay leaked forever. Collapse it into the sibling now
+                # (mirrors the exact-restore IntegrityError path).
+                _this = conn.execute("SELECT * FROM owned_games WHERE id = ?", (_r["id"],)).fetchone()
+                _other = conn.execute("SELECT * FROM owned_games WHERE id = ?", (_dup["id"],)).fetchone()
+                if _this and _other and _this["is_owned"]:
+                    dedup.merge_group(conn, [_this, _other])
+                continue
             try:
                 conn.execute(
                     "UPDATE owned_games SET igdb_id = ?, updated_at = datetime('now') WHERE id = ?",

@@ -853,3 +853,44 @@ def test_igdb_matches_restore_tolerant_identity_fallback():
     row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (new,)).fetchone()
     assert row["igdb_id"] == 125165, "tolerant-identity fallback must restore the manual pick"
     conn.close()
+
+
+def test_igdb_matches_restore_fallback_collapses_duplicate_into_sibling():
+    """The recurring leak (memos/7-unmatched): a fresh unmatched receipt row is a
+    duplicate of an already-OWNED canonical that claims the same
+    (igdb_id, platform, format). The tolerant fallback must COLLAPSE the fresh
+    row into that sibling (retire it), not skip it — dedup only merges
+    matched-with-matched, so skipping leaves it unmatched forever."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    # owned canonical with a manual record
+    _seed_game(conn, "Final Fantasy Tactics –The Ivalice Chronicles– Amazon Exclusive Edition",
+               platform="playstation 5", igdb_id=358669, source="amazon")
+    canon = conn.execute("SELECT id FROM owned_games WHERE igdb_id = 358669").fetchone()["id"]
+    conn.execute(
+        "INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title) VALUES (?,?,?,?)",
+        (canon, 358669, "manual", "FINAL FANTASY TACTICS –The Ivalice Chronicles– Amazon Exclusive Edition"),
+    )
+    # fresh unmatched duplicate receipt (the recurring leak)
+    conn.execute(
+        """INSERT INTO owned_games(title, normalized_title, platform, format, ownership_class,
+               source, is_owned, igdb_id, provenance)
+           VALUES ('FINAL FANTASY TACTICS –The Ivalice Chronicles– Amazon Exclusive Edition',
+                   'final fantasy tactics -the ivalice chronicles- amazon exclusive edition',
+                   'playstation 5', 'physical', 'purchased', 'amazon', 1, NULL, 'amazon:new')"""
+    )
+    fresh = conn.execute("SELECT id FROM owned_games WHERE provenance='amazon:new'").fetchone()["id"]
+    assert fresh != canon
+    conn.commit()
+    conn.close()
+
+    stub = _StubIgdb(search={})
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+
+    conn = connect(f"sqlite:///{db}")
+    fresh_row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (fresh,)).fetchone()
+    assert fresh_row["is_owned"] == 0, "duplicate fresh row must be retired (merged into canonical)"
+    canon_row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (canon,)).fetchone()
+    assert canon_row["igdb_id"] == 358669 and canon_row["is_owned"] == 1
+    conn.close()
