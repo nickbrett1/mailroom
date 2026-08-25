@@ -1075,6 +1075,10 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     ).fetchall():
         _ids = _by_key.get(_restore_identity_key(_r["title"] or ""))
         if not _ids:
+            context.log.info(
+                "restore-fallback: no manual pick for %r (%r/%r) key=%r",
+                _r["title"], _r["platform"], _r["format"], _restore_identity_key(_r["title"] or ""),
+            )
             continue
         for _gid in dict.fromkeys(_ids):
             _dup = conn.execute(
@@ -1091,6 +1095,10 @@ def igdb_matches(context: AssetExecutionContext) -> None:
                 _this = conn.execute("SELECT * FROM owned_games WHERE id = ?", (_r["id"],)).fetchone()
                 _other = conn.execute("SELECT * FROM owned_games WHERE id = ?", (_dup["id"],)).fetchone()
                 if _this and _other and _this["is_owned"]:
+                    context.log.info(
+                        "restore-fallback: collapsing %r (%r/%r) into sibling %r (igdb %s)",
+                        _r["title"], _r["platform"], _r["format"], _dup["id"], _gid,
+                    )
                     dedup.merge_group(conn, [_this, _other])
                 continue
             try:
@@ -1099,6 +1107,10 @@ def igdb_matches(context: AssetExecutionContext) -> None:
                     (_gid, _r["id"]),
                 )
                 restored += 1
+                context.log.info(
+                    "restore-fallback: restored igdb %s on %r (%r/%r)",
+                    _gid, _r["title"], _r["platform"], _r["format"],
+                )
                 break
             except sqlite3.IntegrityError:
                 continue
