@@ -322,6 +322,55 @@ def test_upsert_merges_on_igdb_id():
     conn.close()
 
 
+def test_upsert_reingest_matched_physical_reuses_existing_row():
+    """A re-ingested previously-MATCHED physical row (concrete platform after
+    platform backfill) must be reused by identity when the fresh receipt row is
+    generic 'playstation' — not INSERT a new unmatched duplicate. Before the
+    fix, the un-enriched match only had generic-platform tolerance for
+    format='digital', so physical re-ingests kept creating duplicates
+    (memos/7-unmatched games: owned_games rows 2151-2158 instead of reusing
+    794 etc.)."""
+    conn, _ = _db()
+    orig = _seed(
+        conn,
+        title="FINAL FANTASY TACTICS –The Ivalice Chronicles– Amazon Exclusive Edition",
+        platform="playstation 5", format="physical", igdb_id=358669,
+        source="amazon", order_number="A1", provenance="amazon:A1",
+    )
+    # Re-ingest: a fresh receipt row, generic platform, no igdb_id (classified
+    # items carry none). It must merge into the existing matched row, not dup.
+    same = upsert_owned_game(
+        conn,
+        {
+            "title": "FINAL FANTASY TACTICS –The Ivalice Chronicles– Amazon Exclusive Edition",
+            "normalized_title": assets.normalize_title(
+                "FINAL FANTASY TACTICS –The Ivalice Chronicles– Amazon Exclusive Edition"
+            ),
+            "platform": "playstation",
+            "format": "physical",
+            "ownership_class": "purchased",
+            "retailer": "amazon",
+            "order_number": "A1",
+            "item_id": None,
+            "condition": None,
+            "psn_content_id": None,
+            "igdb_id": None,
+            "acquisition_date": None,
+            "price": None,
+            "source": "amazon",
+            "source_ref": "amazon:A1",
+            "status": "owned",
+            "is_owned": 1,
+            "provenance": "amazon:A1",
+        },
+    )
+    assert same == orig
+    assert conn.execute("SELECT COUNT(*) n FROM owned_games").fetchone()["n"] == 1
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (orig,)).fetchone()
+    assert row["igdb_id"] == 358669, "re-ingest must preserve the existing match, not orphan it"
+    conn.close()
+
+
 def test_igdb_matches_collapses_duplicate_at_enrichment():
     """Two unmatched receipts of the same game: when the second gains the same
     IGDB match it collapses into the first (index guard + merge) instead of

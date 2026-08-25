@@ -614,18 +614,22 @@ def upsert_owned_game(conn: sqlite3.Connection, game: dict[str, Any]) -> int:
     key = (game.get("psn_content_id") or "", game.get("normalized_title") or "", game.get("platform") or "")
     # Same title/format on a generic platform is the same game — a receipt row
     # ('playstation' — the parser emits no platform hint) merges into the
-    # concrete psn_api row and vice versa. Prefer the concrete row (has the
-    # content id) when both exist. Prefer OWNED rows: a dup-merge retires the
-    # loser, so a re-ingested receipt must update the winner, not the retired
-    # row (is_owned DESC — catalog-dedup-fix).
+    # concrete psn_api row (physical OR digital) and vice versa. Prefer the
+    # concrete row (has the content id) when both exist. Prefer OWNED rows: a
+    # dup-merge retires the loser, so a re-ingested receipt must update the
+    # winner, not the retired row (is_owned DESC — catalog-dedup-fix). The
+    # generic-platform tolerance applies to EVERY format so a re-ingested
+    # previously-matched row (concrete platform after platform backfill) is
+    # reused by identity instead of INSERTing a fresh unmatched duplicate
+    # (memos/7-unmatched games — owned_games 2151–2158).
     row = conn.execute(
         """SELECT id, provenance FROM owned_games
            WHERE (psn_content_id = ?
                   OR (normalized_title = ? AND platform = ?)
-                  OR (format = 'digital' AND normalized_title = ?
+                  OR (format = ? AND normalized_title = ?
                       AND (platform IN ('playstation', 'ps') OR ? IN ('playstation', 'ps'))))
            ORDER BY is_owned DESC, (platform = ?) DESC, (platform IN ('playstation', 'ps')) ASC, id LIMIT 1""",
-        (*key, game.get("normalized_title") or "", game.get("platform") or "", game.get("platform") or ""),
+        (*key, game.get("format") or "", game.get("normalized_title") or "", game.get("platform") or "", game.get("platform") or ""),
     ).fetchone()
     if row:
         return _update_owned_game(conn, row, game)
