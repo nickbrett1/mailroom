@@ -633,28 +633,6 @@ def upsert_owned_game(conn: sqlite3.Connection, game: dict[str, Any]) -> int:
     ).fetchone()
     if row:
         return _update_owned_game(conn, row, game)
-    # DIAGNOSTIC (memos/7-unmatched): we're about to INSERT a new row but a row
-    # with the same normalized_title already exists — log why it wasn't reused.
-    # This pinpoints the canonical-row-reuse failure (the 2151-2158/2183-2190
-    # batches) without guessing. Remove once root cause is confirmed & fixed.
-    import logging
-
-    _log = logging.getLogger("mailroom.upsert")
-    _existing = conn.execute(
-        """SELECT id, title, platform, format, igdb_id, is_owned, status, retire_reason
-           FROM owned_games WHERE normalized_title = ?
-           ORDER BY is_owned DESC, id""",
-        (game.get("normalized_title") or "",),
-    ).fetchall()
-    if _existing:
-        _log.warning(
-            "upsert_owned_game INSERT %r (platform=%r format=%r psn=%r) — same-title rows present: %s",
-            game.get("title"),
-            game.get("platform"),
-            game.get("format"),
-            game.get("psn_content_id"),
-            [dict(r) for r in _existing],
-        )
     cur = conn.execute(
         """INSERT INTO owned_games
            (title, normalized_title, platform, format, ownership_class, retailer,
