@@ -774,6 +774,27 @@ def _igdb_norm(s: str) -> str:
     return _roman_to_arabic(s)
 
 
+def _restore_identity_key(title: str) -> str:
+    """A noise-collapsed identity key used to restore MANUAL IGDB picks that a
+    re-ingestion would otherwise orphan (memos/7-unmatched).
+
+    It collapses the cosmetic differences that make exact `normalized_title`
+    matching fail across sources/re-parses — stray listing quotes, platform
+    words, retailer/edition suffixes — but stays specific enough that two
+    different games don't collide. NOT used for auto-matching.
+    """
+    s = (title or "").lower()
+    s = re.sub(r"[™®©&()_'\"]", " ", s)
+    s = re.sub(
+        r"\b(?:playstation\s*[45]|ps4|ps5|ps vita|psvita|ps3|psp|for playstation\s*[45]|"
+        r"game|hits|exclusive|edition|remastered|remake|standard|deluxe|ultimate|special|"
+        r"complete|definitive|version|bundle|amazon|best buy|gamestop|target|walmart)\b",
+        " ", s,
+    )
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def _igdb_name_matches(title: str, igdb_name: str | None) -> bool:
     """Exact-name check between our title and an IGDB result name.
 
@@ -1031,6 +1052,47 @@ def igdb_matches(context: AssetExecutionContext) -> None:
                 dedup.merge_group(conn, [this, other])
             else:
                 raise
+    # --- Fallback: restore manual picks by tolerant identity (no orig row) ---
+    # The exact restore above requires the orig owned_games row to EXIST and
+    # share g's normalized_title/format/platform. A re-ingestion can recreate
+    # the row before the orig canonical is present/owned, or the titles can
+    # differ cosmetically (stray quote / edition words), so it silently misses
+    # and the same titles recur unmatched every run (memos/7-unmatched). Fall
+    # back to restoring by a noise-collapsed identity key on
+    # igdb_matches.matched_title (the title recorded when the human matched it)
+    # + igdb_id, independent of the orig row's state. Human picks only, and
+    # skipped when an owned row already claims the (igdb_id, platform, format).
+    _manual = conn.execute(
+        "SELECT igdb_id, matched_title FROM igdb_matches WHERE confidence = 'manual'"
+    ).fetchall()
+    _by_key: dict[str, list[int]] = {}
+    for _m in _manual:
+        if not _m["matched_title"]:
+            continue
+        _by_key.setdefault(_restore_identity_key(_m["matched_title"]), []).append(_m["igdb_id"])
+    for _r in conn.execute(
+        "SELECT id, title, platform, format FROM owned_games WHERE is_owned = 1 AND igdb_id IS NULL"
+    ).fetchall():
+        _ids = _by_key.get(_restore_identity_key(_r["title"] or ""))
+        if not _ids:
+            continue
+        for _gid in dict.fromkeys(_ids):
+            _dup = conn.execute(
+                """SELECT id FROM owned_games
+                   WHERE is_owned = 1 AND igdb_id = ? AND platform = ? AND format = ? AND id != ?""",
+                (_gid, _r["platform"], _r["format"], _r["id"]),
+            ).fetchone()
+            if _dup:
+                continue  # already claimed by an owned sibling -> dedup will collapse
+            try:
+                conn.execute(
+                    "UPDATE owned_games SET igdb_id = ?, updated_at = datetime('now') WHERE id = ?",
+                    (_gid, _r["id"]),
+                )
+                restored += 1
+                break
+            except sqlite3.IntegrityError:
+                continue
     conn.commit()
     rows = conn.execute(
         f"SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id IS NULL {scope_sql}",

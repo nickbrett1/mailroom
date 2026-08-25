@@ -811,3 +811,45 @@ def test_igdb_matches_restore_tolerates_generic_platform_reparse():
     row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (new,)).fetchone()
     assert row["igdb_id"] == 14147, "manual pick must survive a generic-platform re-parse"
     conn.close()
+
+
+def test_igdb_matches_restore_tolerant_identity_fallback():
+    """A manual pick must survive even when the exact restore can't fire: the
+    fresh re-ingested row's title differs cosmetically from the row the match
+    was recorded on (stray quote / platform word), so normalized_title equality
+    fails. The tolerant-identity fallback (noise-collapsed key on the manual
+    record's matched_title) restores it anyway (memos/7-unmatched Diablo IV)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    # user manually matched the clean 'Diablo IV' on an orig row (now retired)
+    conn.execute(
+        """INSERT INTO owned_games(title, normalized_title, platform, format, ownership_class,
+               source, is_owned, igdb_id, provenance)
+           VALUES ('Diablo IV', 'diablo iv', 'playstation 5', 'physical', 'purchased',
+                   'amazon', 0, 125165, 'amazon:orig')"""
+    )
+    orig = conn.execute("SELECT id FROM owned_games WHERE provenance='amazon:orig'").fetchone()["id"]
+    conn.execute(
+        "INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title) VALUES (?,?,?,?)",
+        (orig, 125165, "manual", "Diablo IV"),
+    )
+    # fresh re-ingested row with a corrupted title (stray quote + platform word)
+    conn.execute(
+        """INSERT INTO owned_games(title, normalized_title, platform, format, ownership_class,
+               source, is_owned, igdb_id, provenance)
+           VALUES ('Diablo IV - PlayStation 5"', 'diablo iv - "', 'playstation 5', 'physical',
+                   'purchased', 'amazon', 1, NULL, 'amazon:new')"""
+    )
+    new = conn.execute("SELECT id FROM owned_games WHERE provenance='amazon:new'").fetchone()["id"]
+    assert new != orig
+    conn.commit()
+    conn.close()
+
+    stub = _StubIgdb(search={})  # no auto-match — only restore can save it
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (new,)).fetchone()
+    assert row["igdb_id"] == 125165, "tolerant-identity fallback must restore the manual pick"
+    conn.close()
