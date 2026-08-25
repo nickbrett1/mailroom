@@ -997,21 +997,40 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     # recheck (which clears igdb_id first) restores human picks instead of
     # letting the auto-matcher override them.
     to_restore = conn.execute(
-        """SELECT g.id, m.igdb_id
+        """SELECT g.id, g.platform, g.format, m.igdb_id
            FROM owned_games g
            JOIN igdb_matches m ON m.confidence = 'manual'
            JOIN owned_games orig ON orig.id = m.owned_game_id
            WHERE g.is_owned = 1 AND g.igdb_id IS NULL
              AND g.normalized_title = orig.normalized_title
-             AND g.platform = orig.platform
-             AND g.format = orig.format"""
+             AND g.format = orig.format
+             AND (g.platform = orig.platform
+                  OR COALESCE(g.platform, '') IN ('playstation', 'ps')
+                  OR COALESCE(orig.platform, '') IN ('playstation', 'ps'))"""
     ).fetchall()
+    restored = 0
     for r in to_restore:
-        conn.execute(
-            "UPDATE owned_games SET igdb_id = ?, updated_at = datetime('now') WHERE id = ?",
-            (r["igdb_id"], r["id"]),
-        )
-    restored = len(to_restore)
+        try:
+            conn.execute(
+                "UPDATE owned_games SET igdb_id = ?, updated_at = datetime('now') WHERE id = ?",
+                (r["igdb_id"], r["id"]),
+            )
+            restored += 1
+        except sqlite3.IntegrityError:
+            # Dedup guard (catalog-dedup-fix): another OWNED row already has
+            # this (igdb_id, platform, format) — a restored generic-platform
+            # row can collide with its concrete sibling (or vice versa). Collapse
+            # instead of leaving a duplicate (mirrors the auto-match handling).
+            other = conn.execute(
+                """SELECT * FROM owned_games
+                   WHERE is_owned = 1 AND igdb_id = ? AND platform = ? AND format = ? AND id != ?""",
+                (r["igdb_id"], r["platform"], r["format"], r["id"]),
+            ).fetchone()
+            this = conn.execute("SELECT * FROM owned_games WHERE id = ?", (r["id"],)).fetchone()
+            if other and this and this["is_owned"]:
+                dedup.merge_group(conn, [this, other])
+            else:
+                raise
     conn.commit()
     rows = conn.execute(
         f"SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id IS NULL {scope_sql}",

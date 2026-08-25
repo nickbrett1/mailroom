@@ -771,3 +771,43 @@ def test_igdb_matches_restore_uses_stable_identity_not_row_id():
     row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (new,)).fetchone()
     assert row["igdb_id"] == 14147, "manual pick must transfer to the re-ingested row"
     conn.close()
+
+
+def test_igdb_matches_restore_tolerates_generic_platform_reparse():
+    """A re-parse can retire the CONCRETE-platform row the user manually matched
+    and create a fresh GENERIC ('playstation') row (the owned_games asset
+    defaults receipt rows to 'playstation'). The restore must still transfer
+    the manual pick — matching 'playstation' to 'playstation 4' like the
+    dedup/upsert logic does — or the pick silently falls off the needs-match
+    list (the bug: g.platform = orig.platform exact match)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    # 1) user manually matched 'Jotun' on a concrete PS4 row yesterday
+    _seed_game(conn, "Jotun", platform="playstation 4", igdb_id=14147, source="psn_api")
+    old = conn.execute("SELECT id FROM owned_games WHERE title = 'Jotun'").fetchone()["id"]
+    conn.execute(
+        "INSERT OR IGNORE INTO igdb_matches(owned_game_id, igdb_id, confidence, matched_title) VALUES (?,?,?,?)",
+        (old, 14147, "manual", "Jotun"),
+    )
+    conn.execute("UPDATE owned_games SET is_owned=0, igdb_id=NULL WHERE id = ?", (old,))
+    # 2) a re-parse creates a fresh GENERIC-platform row (receipts carry no hint)
+    conn.execute(
+        """INSERT INTO owned_games(title, normalized_title, platform, format, ownership_class,
+               source, is_owned, igdb_id, provenance)
+           VALUES ('Jotun', 'jotun', 'playstation', 'physical', 'purchased', 'psn_receipt', 1, NULL, 'psn_receipt:new')"""
+    )
+    new = conn.execute(
+        "SELECT id FROM owned_games WHERE provenance = 'psn_receipt:new'"
+    ).fetchone()["id"]
+    assert new != old
+    conn.commit()
+    conn.close()
+
+    stub = _StubIgdb(search={})  # auto-match finds nothing — only restore can save it
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (new,)).fetchone()
+    assert row["igdb_id"] == 14147, "manual pick must survive a generic-platform re-parse"
+    conn.close()
