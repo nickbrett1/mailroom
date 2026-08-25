@@ -622,8 +622,11 @@ def apply_review_merges(conn, report: RepairReport) -> None:
 
 # --- title noise + alternative-name merges ----------------------------------
 # ' and N more items' is a marketplace listing summary a parser swallowed into
-# an item title (e.g. "Diablo IV - PlayStation 5 and 1 more item").
-_MORE_ITEMS_RE = re.compile(r"(?:\s*,?\s*and\s+\d+\s+more\s+items?)\s*$", re.IGNORECASE)
+# an item title (e.g. "Diablo IV - PlayStation 5 and 1 more item", sometimes
+# with the listing's wrapping quote still attached: `Diablo IV - PlayStation
+# 5" and 1 more item`). The stray quote is catalog noise — consume it too so
+# the platform-suffix strip below still fires (memos/7-unmatched Diablo IV).
+_MORE_ITEMS_RE = re.compile(r"""(?:\s*,?\s*"?\s*and\s+\d+\s+more\s+items?)\s*$""", re.IGNORECASE)
 # PlayStation Vita console models (hardware, not games) that bypassed the
 # platform gate under a console-model title (e.g. "PlayStation Vita Wi-Fi…").
 _CONSOLE_HARDWARE_RE = re.compile(
@@ -642,6 +645,7 @@ def _clean_catalog_title(title: str) -> str:
     """
     t = title.strip()
     t = re.sub(_MORE_ITEMS_RE, "", t)
+    t = t.strip('"')  # stray marketplace listing wrapping quotes (e.g. '"X - PS5" and 1 more item')
     t = re.sub(r"\s*\(\s*(?:downloadable\s+)?(?:full\s+)?game\s*\)\s*$", "", t, flags=re.IGNORECASE)
     # size-note parenthetical: '(Full Game 128 MB)' / '(Full Game 979 MB)'
     t = re.sub(

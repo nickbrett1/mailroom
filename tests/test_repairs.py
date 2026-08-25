@@ -642,6 +642,30 @@ def test_title_cleanup_strips_platform_suffix_and_more_items():
     conn.close()
 
 
+def test_title_cleanup_strips_stray_quote_from_more_items_tail():
+    """The Amazon listing summary can carry a stray wrapping quote, e.g.
+    'Diablo IV - PlayStation 5\" and 1 more item'. The ' and N more items' tail
+    AND the stray quote must be stripped so the platform-suffix strip can still
+    reduce it to 'Diablo IV' (memos/7-unmatched Diablo IV corruption)."""
+    conn, _ = _db()
+    pid = _seed(
+        conn,
+        title='Diablo IV - PlayStation 5" and 1 more item',
+        platform="playstation 5",
+        format="physical",
+        source="amazon",
+        order_number="o-diablo2",
+        igdb_id=None,
+    )
+    report = apply_catalog_repairs(conn)
+    assert report.retired == []
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (pid,)).fetchone()
+    assert row["title"] == "Diablo IV"
+    assert row["normalized_title"] == "diablo iv"
+    assert row["is_owned"] == 1
+    conn.close()
+
+
 def test_title_cleanup_strips_retailer_exclusive_and_size_note():
     """'Secret of Mana - PlayStation 4 GameStop Exclusive' is just Secret of
     Mana: the retailer-exclusive marker and platform suffix are display-only
