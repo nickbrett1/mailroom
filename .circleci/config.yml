@@ -64,24 +64,6 @@ jobs:
               --cache-to type=registry,ref=$MAILROOM_CACHE_REF,mode=max \
               -t ghcr.io/nickbrett1/mailroom:$CIRCLE_SHA1 -t ghcr.io/nickbrett1/mailroom:latest --push .
       - run:
-          name: Set GHCR Package Visibility (public)
-          command: |
-            IMAGE="ghcr.io/nickbrett1/mailroom"
-            PKG_NAME="$(basename "$IMAGE" | tr '[:upper:]' '[:lower:]')"
-            echo "Setting GHCR package '$PKG_NAME' visibility to 'public'..."
-            if ! curl -fsS -X PATCH \
-                -H "Authorization: Bearer $GHCR_UPDATE_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/user/packages/container/$PKG_NAME/visibility" \
-                -d '{"visibility":"public"}' >/dev/null; then
-              echo "User-scope call failed; retrying with org scope 'nickbrett1'..."
-              curl -fsS -X PATCH \
-                -H "Authorization: Bearer $GHCR_UPDATE_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/orgs/nickbrett1/packages/container/$PKG_NAME/visibility" \
-                -d '{"visibility":"public"}' >/dev/null
-            fi
-      - run:
           name: Build and Push Image (catalog-mcp)
           command: |
             docker buildx create --use --bootstrap || true
@@ -90,24 +72,6 @@ jobs:
               --cache-to type=registry,ref=$CATALOG_MCP_CACHE_REF,mode=max \
               -t ghcr.io/nickbrett1/catalog-mcp:$CIRCLE_SHA1 -t ghcr.io/nickbrett1/catalog-mcp:latest --push catalog_mcp
       - run:
-          name: Set GHCR Package Visibility (public)
-          command: |
-            IMAGE="ghcr.io/nickbrett1/catalog-mcp"
-            PKG_NAME="$(basename "$IMAGE" | tr '[:upper:]' '[:lower:]')"
-            echo "Setting GHCR package '$PKG_NAME' visibility to 'public'..."
-            if ! curl -fsS -X PATCH \
-                -H "Authorization: Bearer $GHCR_UPDATE_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/user/packages/container/$PKG_NAME/visibility" \
-                -d '{"visibility":"public"}' >/dev/null; then
-              echo "User-scope call failed; retrying with org scope 'nickbrett1'..."
-              curl -fsS -X PATCH \
-                -H "Authorization: Bearer $GHCR_UPDATE_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/orgs/nickbrett1/packages/container/$PKG_NAME/visibility" \
-                -d '{"visibility":"public"}' >/dev/null
-            fi
-      - run:
           name: Build and Push Image (dagster-mcp)
           command: |
             docker buildx create --use --bootstrap || true
@@ -115,24 +79,6 @@ jobs:
               --cache-from type=registry,ref=$DAGSTER_MCP_CACHE_REF \
               --cache-to type=registry,ref=$DAGSTER_MCP_CACHE_REF,mode=max \
               -t ghcr.io/nickbrett1/dagster-mcp:$CIRCLE_SHA1 -t ghcr.io/nickbrett1/dagster-mcp:latest --push dagster-mcp
-      - run:
-          name: Set GHCR Package Visibility (public)
-          command: |
-            IMAGE="ghcr.io/nickbrett1/dagster-mcp"
-            PKG_NAME="$(basename "$IMAGE" | tr '[:upper:]' '[:lower:]')"
-            echo "Setting GHCR package '$PKG_NAME' visibility to 'public'..."
-            if ! curl -fsS -X PATCH \
-                -H "Authorization: Bearer $GHCR_UPDATE_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/user/packages/container/$PKG_NAME/visibility" \
-                -d '{"visibility":"public"}' >/dev/null; then
-              echo "User-scope call failed; retrying with org scope 'nickbrett1'..."
-              curl -fsS -X PATCH \
-                -H "Authorization: Bearer $GHCR_UPDATE_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/orgs/nickbrett1/packages/container/$PKG_NAME/visibility" \
-                -d '{"visibility":"public"}' >/dev/null
-            fi
 workflows:
   build-and-test:
     jobs:
