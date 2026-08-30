@@ -23,6 +23,8 @@ COPY . .
 RUN /opt/venv/bin/pip install --no-cache-dir --no-deps .
 
 FROM python:3.12-slim
+# Link the GHCR container package to its GitHub repo (public repo -> public package).
+LABEL org.opencontainers.image.source=https://github.com/nickbrett1/mailroom
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
