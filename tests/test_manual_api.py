@@ -73,6 +73,38 @@ def test_apply_match_then_no_longer_needed(client):
     conn.close()
 
 
+def test_apply_match_updates_catalog_games_row(client):
+    """A manual match must propagate onto the materialized `games` row that the
+    front-end (catalog_games view) reads, so pshelf's shelf stops showing the
+    title as unmatched without waiting for the next materialization."""
+    from mailroom.db import connect
+
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    game_id = conn.execute("SELECT id FROM owned_games WHERE title = 'BELOW'").fetchone()["id"]
+    # Simulate what the catalog_games materialization does: group BELOW under a
+    # canonical `games` row with igdb_id NULL (still unmatched on the shelf).
+    cur = conn.execute(
+        """INSERT INTO games(title, normalized_title, igdb_id, platform, platforms,
+               formats, ownership_classes, num_editions, purchased, editions)
+           VALUES ('BELOW', 'below', NULL, 'playstation 4', 'playstation 4',
+                   'digital', 'purchased', 1, 1, '[{"id":' || ? || ',"title":"BELOW"}]')""",
+        (game_id,),
+    )
+    gid = cur.lastrowid
+    conn.execute("UPDATE owned_games SET game_id = ? WHERE id = ?", (gid, game_id))
+    conn.commit()
+    conn.close()
+
+    res = client.post("/manual/igdb-match", json={"owned_game_id": game_id, "igdb_id": 383834})
+    assert res.status_code == 200
+    assert res.json()["applied"] is True
+
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    row = conn.execute("SELECT igdb_id FROM games WHERE id = ?", (gid,)).fetchone()
+    assert row["igdb_id"] == 383834
+    conn.close()
+
+
 def test_review_queue_lists_and_resolves_flags(client):
     """Dedup review flags (possible double purchases) are visible and
     adjudicable via the manual API; resolution is recorded on the flag."""

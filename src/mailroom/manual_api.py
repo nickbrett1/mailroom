@@ -31,7 +31,14 @@ import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from mailroom.db import _CLEAR, connect, get_credential, init_db, set_credential
+from mailroom.db import (
+    _CLEAR,
+    checkpoint_wal,
+    connect,
+    get_credential,
+    init_db,
+    set_credential,
+)
 from mailroom.verticals.game_catalog import dedup
 
 app = FastAPI(title="mailroom manual-edit API")
@@ -333,6 +340,31 @@ def psn_web_session_status() -> dict:
         conn.close()
 
 
+def _refresh_games_for_owned(conn, owned_game_id: int) -> None:
+    """Push a manual match onto the materialized `games` row.
+
+    `catalog_games` is a VIEW over the `games` table, which is only rebuilt by
+    the catalog_games Dagster asset (a scheduled materialization). A manual
+    match writes `owned_games.igdb_id` but leaves `games` stale, so pshelf's
+    shelf (which reads catalog_games) still shows the title as unmatched until
+    the next materialization. Sync the owning `games` row's igdb_id here so the
+    shelf reflects the match immediately. The per-game IGDB metadata (rating,
+    genres, cover) still fills in on the next game_metadata run.
+    """
+    row = conn.execute(
+        "SELECT game_id FROM owned_games WHERE id = ?", (owned_game_id,)
+    ).fetchone()
+    if not row or row["game_id"] is None:
+        return  # not grouped yet — the next catalog_games run will pick it up
+    owned = conn.execute(
+        "SELECT igdb_id FROM owned_games WHERE id = ?", (owned_game_id,)
+    ).fetchone()
+    conn.execute(
+        "UPDATE games SET igdb_id = ?, updated_at = datetime('now') WHERE id = ?",
+        (owned["igdb_id"] if owned else None, row["game_id"]),
+    )
+
+
 @app.post("/manual/igdb-match")
 def igdb_match(req: MatchRequest) -> dict:
     """Apply a human-picked IGDB match for an owned game (review resolution).
@@ -372,6 +404,7 @@ def igdb_match(req: MatchRequest) -> dict:
                 ),
             )
             conn.commit()
+            checkpoint_wal(conn)
             return {
                 "owned_game_id": winner_id,
                 "igdb_id": req.igdb_id,
@@ -396,7 +429,11 @@ def igdb_match(req: MatchRequest) -> dict:
                 req.note or "",
             ),
         )
+        _refresh_games_for_owned(conn, req.owned_game_id)
         conn.commit()
+        # Fold the WAL into the main .db file so read-only consumers (pshelf)
+        # that mount the store read-only see the match immediately.
+        checkpoint_wal(conn)
         return {"owned_game_id": req.owned_game_id, "igdb_id": req.igdb_id, "applied": True}
     finally:
         conn.close()
