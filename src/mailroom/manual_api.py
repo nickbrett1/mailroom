@@ -31,7 +31,7 @@ import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from mailroom.db import connect, get_credential, init_db, set_credential
+from mailroom.db import _CLEAR, connect, get_credential, init_db, set_credential
 from mailroom.verticals.game_catalog import dedup
 
 app = FastAPI(title="mailroom manual-edit API")
@@ -270,7 +270,7 @@ def psn_cookies(req: PsnCookiesRequest) -> dict:
         raise HTTPException(400, "no usable cookies (need name/value pairs)")
     conn = _conn()
     set_credential(conn, "psn_cookies", token=json.dumps(cookies),
-                   token_type="session_cookies", status="valid", last_error=None)
+                   token_type="session_cookies", status="valid", last_error=_CLEAR)
     conn.close()
     return {"status": "valid", "stored": len(cookies), "keys": sorted(cookies.keys())}
 
@@ -312,7 +312,7 @@ def psn_web_session(req: PsnWebSessionRequest) -> dict:
         raise HTTPException(400, "no session cookie provided")
     conn = _conn()
     set_credential(conn, "psn_web_session", token=cookie,
-                   token_type="web_session_cookie", status="valid", last_error=None)
+                   token_type="web_session_cookie", status="valid", last_error=_CLEAR)
     conn.close()
     return {"status": "valid", "source": "psn_web_session"}
 
@@ -522,7 +522,7 @@ def psn_credential(req: PsnCredentialRequest) -> dict:
     if not refresh:
         raise HTTPException(400, "exchange succeeded but no refresh token returned")
     conn = _conn()
-    set_credential(conn, "psn", token=refresh, token_type="refresh_token", status="valid", last_error=None)
+    set_credential(conn, "psn", token=refresh, token_type="refresh_token", status="valid", last_error=_CLEAR)
     # Fresh code-exchanged access token — the refresh-derived Bearer 403s on
     # the gameList playtime endpoint; the code exchange may carry full scope.
     access = tokens.get("access_token")
@@ -533,7 +533,7 @@ def psn_credential(req: PsnCredentialRequest) -> dict:
         if tokens.get("expires_in"):
             expires_at = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(_time.time() + int(tokens["expires_in"])))
         set_credential(conn, "psn_access", token=access, token_type="access_token",
-                       status="valid", last_error=None, expires_at=expires_at)
+                       status="valid", last_error=_CLEAR, expires_at=expires_at)
     # Session cookies for the m.np.playstation.com playtime endpoint (gameList
     # 403s with the Bearer scope; the NPSSO authorize response sets the jar).
     cookies = tokens.get("cookies")
@@ -541,7 +541,7 @@ def psn_credential(req: PsnCredentialRequest) -> dict:
         set_credential(
             conn, "psn_cookies",
             token=json.dumps(cookies), token_type="session_cookies",
-            status="valid", last_error=None,
+            status="valid", last_error=_CLEAR,
         )
     conn.close()
     return {"status": "valid", "refresh_token_prefix": refresh[:12], "cookies_stored": bool(cookies)}

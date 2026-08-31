@@ -275,6 +275,8 @@ def test_psn_credential_status_and_refresh(client, monkeypatch):
     cred = get_credential_for_test(conn)
     assert cred["status"] == "valid"
     assert cred["token"] == "rt-new-1234567890"
+    # A successful refresh clears the previous error (was stuck via COALESCE).
+    assert cred["last_error"] is None
     conn.close()
 
 

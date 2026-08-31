@@ -29,6 +29,7 @@ from mailroom.clients import (
     recover_webview_html,
 )
 from mailroom.db import (
+    _CLEAR,
     checkpoint_wal,
     connect,
     enqueue_review,
@@ -259,7 +260,11 @@ def psn_api_owned(context: AssetExecutionContext) -> None:
         else:
             added += 1
         upsert_owned_game(conn, game)
-    set_credential(conn, "psn", status="valid", last_success=datetime.now(UTC).isoformat(timespec="seconds"))
+    set_credential(
+        conn, "psn", status="valid",
+        last_success=datetime.now(UTC).isoformat(timespec="seconds"),
+        last_error=_CLEAR,
+    )
     conn.close()
     context.log.info(f"psn_api_owned: {added} added, {confirmed} confirmed/updated ({len(titles)} library items)")
 

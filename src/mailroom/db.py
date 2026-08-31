@@ -676,6 +676,14 @@ def get_credential(conn: sqlite3.Connection, source: str) -> dict[str, Any] | No
     return dict(row) if row else None
 
 
+# Sentinel for set_credential: explicitly reset a column back to NULL. None
+# means "leave unchanged"; _CLEAR forces NULL (e.g. clear last_error after a
+# successful refresh so a healthy credential doesn't keep showing a stale
+# error). COALESCE(?, col) can't express this (NULL means unchanged), so the
+# ON CONFLICT branch assigns the resolved values directly via `excluded.*`.
+_CLEAR = object()
+
+
 def set_credential(
     conn: sqlite3.Connection,
     source: str,
@@ -687,28 +695,38 @@ def set_credential(
     last_error: str | None = None,
     last_success: str | None = None,
 ) -> None:
-    """Upsert a source credential; None fields are left unchanged."""
+    """Upsert a source credential; None fields are left unchanged.
+
+    Pass _CLEAR for a column to explicitly reset it to NULL (e.g.
+    last_error=_CLEAR on a successful refresh)."""
     cur = get_credential(conn, source) or {}
+
+    def resolve(value, col, default=None):
+        if value is _CLEAR:
+            return None
+        if value is not None:
+            return value
+        return cur.get(col, default)
+
     conn.execute(
         """INSERT INTO credentials(source, token, token_type, expires_at, status, last_error, last_success, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
            ON CONFLICT(source) DO UPDATE SET
-             token = COALESCE(?, token),
-             token_type = COALESCE(?, token_type),
-             expires_at = COALESCE(?, expires_at),
-             status = COALESCE(?, status),
-             last_error = COALESCE(?, last_error),
-             last_success = COALESCE(?, last_success),
+             token = excluded.token,
+             token_type = excluded.token_type,
+             expires_at = excluded.expires_at,
+             status = excluded.status,
+             last_error = excluded.last_error,
+             last_success = excluded.last_success,
              updated_at = datetime('now')""",
         (
             source,
-            token if token is not None else cur.get("token"),
-            token_type if token_type is not None else cur.get("token_type"),
-            expires_at if expires_at is not None else cur.get("expires_at"),
-            status if status is not None else cur.get("status", "needs_refresh"),
-            last_error if last_error is not None else cur.get("last_error"),
-            last_success if last_success is not None else cur.get("last_success"),
-            token, token_type, expires_at, status, last_error, last_success,
+            resolve(token, "token"),
+            resolve(token_type, "token_type"),
+            resolve(expires_at, "expires_at"),
+            resolve(status, "status", "needs_refresh"),
+            resolve(last_error, "last_error"),
+            resolve(last_success, "last_success"),
         ),
     )
     conn.commit()
