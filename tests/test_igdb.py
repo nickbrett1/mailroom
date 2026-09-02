@@ -32,7 +32,7 @@ class _StubIgdb:
         return self.details.get(game_id, {})
 
 
-def _seed_game(conn, title, platform="playstation 5", psn_content_id=None, igdb_id=None, source="psn_receipt"):
+def _seed_game(conn, title, platform="playstation 5", psn_content_id=None, igdb_id=None, source="psn_receipt", ownership_class="purchased"):
     upsert_owned_game(
         conn,
         {
@@ -40,7 +40,7 @@ def _seed_game(conn, title, platform="playstation 5", psn_content_id=None, igdb_
             "normalized_title": assets.normalize_title(title),
             "platform": platform,
             "format": "digital" if psn_content_id else "physical",
-            "ownership_class": "purchased",
+            "ownership_class": ownership_class,
             "retailer": None,
             "order_number": None,
             "item_id": None,
@@ -506,6 +506,69 @@ def test_igdb_matches_token_gate_rejects_unrelated_first_result():
     conn = connect(f"sqlite:///{db}")
     row = conn.execute("SELECT * FROM owned_games").fetchone()
     assert row["igdb_id"] is None, "must not match the Dreams OST to a random High School Musical game"
+    conn.close()
+
+
+def test_igdb_matches_surfaces_ambiguous_reject_to_review_queue():
+    """Issue 1 hardening: a row that stays unmatched DESPITE IGDB returning
+    candidates (the picker can't confidently tie it) must be surfaced to
+    review_queue (reason 'igdb_match_unmatched'), not fail silently in the
+    needs-match list."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    # A PS+ claim whose title IGDB returns candidates for, but none tie cleanly.
+    _seed_game(conn, "The Music of Dreams", platform="playstation 4", psn_content_id="UP9000-CUSA18544_00-DREAMSOST0000001", source="ps_plus", ownership_class="psplus_claimed")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "music dreams": [{"id": 49478, "name": "High School Musical: Livin' the Dream", "platforms": [38]}],
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    row = conn.execute("SELECT * FROM owned_games").fetchone()
+    assert row["igdb_id"] is None, "must stay unmatched (no confident tie)"
+    flag = conn.execute(
+        "SELECT * FROM review_queue WHERE reason = 'igdb_match_unmatched' AND status = 'open'"
+    ).fetchone()
+    assert flag is not None, "ambiguous reject must be surfaced to review_queue"
+    assert "High School Musical" in flag["payload"], "payload should list the candidates it rejected"
+    assert flag["source"] == "ps_plus"
+    conn.close()
+
+
+def test_igdb_matches_resolves_stale_review_flag_after_match():
+    """Issue 1 hardening: once an ambiguous game is matched (auto/manual later),
+    the open 'igdb_match_unmatched' flag auto-resolves so it doesn't accumulate."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "The Music of Dreams", platform="playstation 4", psn_content_id="UP9000-CUSA18544_00-DREAMSOST0000001", source="ps_plus", ownership_class="psplus_claimed")
+    conn.close()
+
+    stub = _StubIgdb(
+        search={
+            "music dreams": [{"id": 49478, "name": "High School Musical: Livin' the Dream", "platforms": [38]}],
+        }
+    )
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    flag = conn.execute("SELECT * FROM review_queue WHERE reason = 'igdb_match_unmatched' AND status = 'open'").fetchone()
+    assert flag is not None, "first pass must surface the ambiguous reject"
+    # Now the game gets matched (auto re-match later, or a manual pick).
+    conn.execute("UPDATE owned_games SET igdb_id = 49478, updated_at = datetime('now')")
+    conn.commit()
+    conn.close()
+
+    assets.igdb_matches(_ctx(f"sqlite:///{db}", stub))
+    conn = connect(f"sqlite:///{db}")
+    resolved = conn.execute(
+        "SELECT * FROM review_queue WHERE reason = 'igdb_match_unmatched' AND status = 'resolved'"
+    ).fetchall()
+    assert any(r["title"] == "The Music of Dreams" for r in resolved), \
+        "the flag must resolve once the game is matched"
     conn.close()
 
 

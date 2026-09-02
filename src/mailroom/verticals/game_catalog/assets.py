@@ -1049,6 +1049,13 @@ def igdb_matches(context: AssetExecutionContext) -> None:
     of owned rows (by id / psn_content_id / title substring) — a scoped
     re-match that heals just the given titles without re-processing the whole
     catalog.
+
+    Rows that stay unmatched DESPITE IGDB returning candidates (the matcher
+    couldn't confidently pick — ambiguous short titles, platform mismatch, a
+    PS+ claim whose title didn't resolve) are no longer silent: they're
+    surfaced to review_queue (reason 'igdb_match_unmatched') with the candidate
+    names, and the flag auto-resolves once the game is matched or retired
+    (memos/mailroom-igdb-match-investigation, Issue 1).
     """
     conn = connect(context.resources.db_url)
     init_db(conn)
@@ -1164,6 +1171,11 @@ def igdb_matches(context: AssetExecutionContext) -> None:
         scope_params,
     ).fetchall()
     matched = unmatched = 0
+    # Still-unmatched rows that HAD IGDB candidates but whose picker rejected
+    # them (ambiguous / no confident exact-or-token match). Surfaced to
+    # review_queue instead of failing silently in the needs-match list
+    # (memos/mailroom-igdb-match-investigation, Issue 1).
+    review_flags: list[dict] = []
     for row in rows:
         gid, matched_title, method = None, None, None
         # Search EVERY candidate term (not just the first non-empty): a raw or
@@ -1228,10 +1240,60 @@ def igdb_matches(context: AssetExecutionContext) -> None:
             matched += 1
         else:
             unmatched += 1
+            if first_results:
+                # The row had IGDB candidates (a plausible entry exists) but the
+                # exact-name / token-gated picker couldn't confidently tie it —
+                # e.g. a PS+ claim whose title/platform didn't resolve to one
+                # entry. That's a human-review case, not a silent needs-match:
+                # surface it (with the candidate names it saw) so an operator can
+                # match or exclude it rather than losing it in the list.
+                review_flags.append(
+                    {
+                        "source": row["source"],
+                        "order_number": row["order_number"],
+                        "title": row["title"],
+                        "payload": json.dumps(
+                            {
+                                "owned_game_id": row["id"],
+                                "platform": row["platform"],
+                                "format": row["format"],
+                                "ownership_class": row["ownership_class"],
+                                "candidates": [
+                                    r.get("name")
+                                    for r in first_results
+                                    if r.get("name")
+                                ][:10],
+                            }
+                        ),
+                    }
+                )
+    # Resolve stale open flags FIRST: a game that is now matched (this run, or a
+    # prior auto/manual match) or retired no longer needs its "unmatched" flag,
+    # so flags don't accumulate in the review queue across runs.
+    conn.execute(
+        """UPDATE review_queue SET status = 'resolved'
+           WHERE reason = 'igdb_match_unmatched' AND status = 'open'
+             AND EXISTS (
+                 SELECT 1 FROM owned_games og
+                 WHERE og.source = review_queue.source
+                   AND COALESCE(og.order_number, '') = COALESCE(review_queue.order_number, '')
+                   AND og.title = review_queue.title
+                   AND (og.is_owned = 0 OR og.igdb_id IS NOT NULL)
+             )"""
+    )
+    for _f in review_flags:
+        conn.execute(
+            """INSERT OR IGNORE INTO review_queue(source, order_number, title, reason, payload)
+               VALUES (:source, :order_number, :title, 'igdb_match_unmatched', :payload)""",
+            _f,
+        )
     conn.commit()
     checkpoint_wal(conn)
     conn.close()
-    context.log.info(f"igdb_matches: {matched} matched, {unmatched} unmatched, {restored} manual restored")
+    context.log.info(
+        f"igdb_matches: {matched} matched, {unmatched} unmatched, {restored} manual restored, "
+        f"{len(review_flags)} ambiguous surfaced for review"
+    )
 
 
 @asset(deps=[igdb_matches], required_resource_keys={"db_url"})
