@@ -44,6 +44,7 @@ from mailroom.verticals.game_catalog.assets import (
     parsed_purchases_physical,
     psn_api_owned,
     psn_playtime,
+    purchase_date_backfill,
     raw_psn_receipts,
     raw_retailer_receipts,
     record_known_order_items,
@@ -62,6 +63,7 @@ catalog_daily_job = define_asset_job(
         "parsed_purchases_physical",
         "classified_game_items",
         "owned_games",
+        "purchase_date_backfill",
         "igdb_matches",
         "dedupe_owned_games",
         "catalog_quality_repairs",
@@ -140,6 +142,14 @@ essentials_auto_job = define_asset_job(
     "essentials_auto",
     selection=AssetSelection.keys("essentials_feed", "essentials_claim_dates"),
 )
+
+# Purchase-date backfill — date purchased games that lack one from their
+# receipt/email (physical + psn_api-only digitals matched to PSN receipts).
+# Also self-heals in catalog_daily. Manual/one-time; idempotent.
+purchase_dates_backfill_job = define_asset_job(
+    "purchase_dates_backfill",
+    selection=AssetSelection.keys("purchase_date_backfill"),
+)
 essentials_auto_schedule = ScheduleDefinition(
     job=essentials_auto_job,
     cron_schedule="30 8 * * *",
@@ -161,6 +171,7 @@ definitions = Definitions(
         essentials_lineup,
         essentials_claim_dates,
         essentials_feed,
+        purchase_date_backfill,
         igdb_matches,
         dedupe_owned_games,
         catalog_quality_repairs,
@@ -175,6 +186,6 @@ definitions = Definitions(
         "psn_api": psn_api_resource,
         "db_url": db_url_resource,
     },
-    jobs=[catalog_recheck_job, essentials_backfill_job, essentials_auto_job],
+    jobs=[catalog_recheck_job, essentials_backfill_job, essentials_auto_job, purchase_dates_backfill_job],
     schedules=[catalog_daily_schedule, psn_sync_schedule, essentials_auto_schedule],
 )

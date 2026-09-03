@@ -56,6 +56,7 @@ from mailroom.verticals.game_catalog.parsers.psn import (
     normalize_title,
     parse_psn_receipt,
 )
+from mailroom.verticals.game_catalog.purchase_dates import backfill_purchase_dates
 from mailroom.verticals.game_catalog.sources import RETAILER_SOURCES, parse_source
 
 # Partitioned by day so incremental runs and backfills are per-slice.
@@ -806,6 +807,27 @@ def owned_games(context: AssetExecutionContext) -> None:
     checkpoint_wal(conn)
     conn.close()
     context.log.info(f"owned_games: {added} rows upserted")
+
+
+@asset(deps=["owned_games"], required_resource_keys={"db_url"})
+def purchase_date_backfill(context: AssetExecutionContext) -> None:
+    """Backfill acquisition_date on purchased games that lack a date.
+
+    Purchases ingested before the parser's email-date fallback sit in
+    owned_games with no acquisition_date (and psn_api-only digitals never get
+    one from the API). This dates them from their receipt email date / a
+    matching PSN receipt. Idempotent; scope: purchased rows with no date only
+    (memos/psplus-essentials-acquisition-date-backfill-adjacent purchase dates).
+    """
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    report = backfill_purchase_dates(conn)
+    conn.close()
+    context.log.info(
+        f"purchase_date_backfill: {report['dated']} dated "
+        f"(stale parsed fixed: {report['stale_parsed_fixed']}), "
+        f"{report['unmatched']} still undated (no receipt match)"
+    )
 
 
 # IGDB platform ids for owned-platform preference among exact-name matches.
