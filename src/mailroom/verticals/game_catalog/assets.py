@@ -161,6 +161,66 @@ def raw_psn_receipts(context: AssetExecutionContext) -> None:
     conn.close()
 
 
+_PSN_PURCHASE_SUBJECT = "Thank You For Your Purchase"
+
+
+@asset(required_resource_keys={"db_url", "msgvault"})
+def backfill_psn_receipts(context: AssetExecutionContext) -> None:
+    """One-time full sweep of PSN purchase receipts from msgvault.
+
+    `raw_psn_receipts` only ever ingested the most recent receipts (first run
+    fetched `limit=200` newest-first, then the cursor moved forward-only) —
+    older PSN purchases (e.g. 2022) were never pulled into the catalog even
+    though the emails exist in msgvault, so they appear date-less in owned_games
+    (memos/…). This ignores the cursor and pages ALL PSN purchase receipts,
+    ingesting any not already stored. Re-run the catalog chain afterwards to
+    parse/classify/date the newly-captured purchases. Idempotent (skips stored).
+    """
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    client = context.resources.msgvault
+    stored = {
+        str(r["message_id"])
+        for r in conn.execute(
+            "SELECT message_id FROM raw_receipts WHERE source = 'psn_receipt'"
+        ).fetchall()
+    }
+    messages: list[dict] = []
+    for sender in PSN_SENDERS:
+        # search_messages pages internally until `limit` matches or the archive
+        # is exhausted -> a large limit sweeps the whole history for a sender.
+        messages += client.search_messages(
+            sender=sender,
+            subject=_PSN_PURCHASE_SUBJECT,
+            after=None,
+            limit=100000,
+        )
+    messages = sorted({int(m["id"]): m for m in messages}.values(), key=lambda m: -int(m["id"]))
+    ingested = 0
+    for m in messages:
+        if str(m["id"]) in stored:
+            continue
+        detail = client.get_message(int(m["id"]))
+        upsert_raw_receipt(
+            conn,
+            {
+                "message_id": str(m["id"]),
+                "source": "psn_receipt",
+                "subject": detail.get("subject") or m.get("subject"),
+                "sender": detail.get("from_email") or m.get("from_email"),
+                "received_at": detail.get("sent_at") or m.get("sent_at"),
+                "body": detail.get("body_text") or "",
+                "body_html": detail.get("body_html") or "",
+            },
+        )
+        ingested += 1
+    conn.close()
+    context.log.info(
+        f"backfill_psn_receipts: {len(messages)} PSN purchase receipts found "
+        f"in msgvault, {ingested} newly ingested"
+    )
+
+
 @asset(deps=[raw_psn_receipts], required_resource_keys={"db_url"})
 def parsed_purchases_digital(context: AssetExecutionContext) -> None:
     """Parse stored PSN receipts into normalized purchases."""

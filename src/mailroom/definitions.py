@@ -28,6 +28,7 @@ def db_url_resource(context) -> str:  # type: ignore[no-untyped-def]
     return os.environ.get("MAILROOM_DB_URL", "sqlite:////data/mailroom.db")
 from mailroom.verticals.game_catalog.assets import (
     backfill_missing_receipts,
+    backfill_psn_receipts,
     catalog_games,
     catalog_quality_repairs,
     catalog_views,
@@ -150,6 +151,15 @@ purchase_dates_backfill_job = define_asset_job(
     "purchase_dates_backfill",
     selection=AssetSelection.keys("purchase_date_backfill"),
 )
+
+# Full PSN-receipt sweep — pull every PSN purchase receipt out of msgvault that
+# the incremental raw_psn_receipts asset never captured (its first run only
+# kept the most recent receipts). Run this, then catalog_daily to parse,
+# classify, dedupe and date the newly-captured purchases. Idempotent.
+psn_receipts_full_backfill_job = define_asset_job(
+    "psn_receipts_full_backfill",
+    selection=AssetSelection.keys("backfill_psn_receipts"),
+)
 essentials_auto_schedule = ScheduleDefinition(
     job=essentials_auto_job,
     cron_schedule="30 8 * * *",
@@ -159,6 +169,7 @@ essentials_auto_schedule = ScheduleDefinition(
 definitions = Definitions(
     assets=[
         raw_psn_receipts,
+        backfill_psn_receipts,
         parsed_purchases_digital,
         raw_retailer_receipts,
         backfill_missing_receipts,
@@ -186,6 +197,6 @@ definitions = Definitions(
         "psn_api": psn_api_resource,
         "db_url": db_url_resource,
     },
-    jobs=[catalog_recheck_job, essentials_backfill_job, essentials_auto_job, purchase_dates_backfill_job],
+    jobs=[catalog_recheck_job, essentials_backfill_job, essentials_auto_job, purchase_dates_backfill_job, psn_receipts_full_backfill_job],
     schedules=[catalog_daily_schedule, psn_sync_schedule, essentials_auto_schedule],
 )
