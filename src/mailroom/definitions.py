@@ -34,6 +34,7 @@ from mailroom.verticals.game_catalog.assets import (
     classified_game_items,
     dedupe_owned_games,
     essentials_claim_dates,
+    essentials_feed,
     essentials_lineup,
     game_covers,
     game_metadata,
@@ -87,6 +88,7 @@ psn_sync_job = define_asset_job(
     selection=AssetSelection.keys(
         "psn_api_owned",
         "psn_playtime",
+        "essentials_claim_dates",
         "igdb_matches",
         "dedupe_owned_games",
         "game_metadata",
@@ -131,6 +133,19 @@ essentials_backfill_job = define_asset_job(
     selection=AssetSelection.keys("essentials_lineup", "essentials_claim_dates"),
 )
 
+# Essentials ongoing upkeep — scrape the authoritative monthly list for any new
+# months/rows and date newly-claimed Essential monthlies. Runs daily (lineups
+# update when Sony announces the next month). Idempotent.
+essentials_auto_job = define_asset_job(
+    "essentials_auto",
+    selection=AssetSelection.keys("essentials_feed", "essentials_claim_dates"),
+)
+essentials_auto_schedule = ScheduleDefinition(
+    job=essentials_auto_job,
+    cron_schedule="30 8 * * *",
+    execution_timezone="America/New_York",
+)
+
 definitions = Definitions(
     assets=[
         raw_psn_receipts,
@@ -145,6 +160,7 @@ definitions = Definitions(
         psn_playtime,
         essentials_lineup,
         essentials_claim_dates,
+        essentials_feed,
         igdb_matches,
         dedupe_owned_games,
         catalog_quality_repairs,
@@ -159,6 +175,6 @@ definitions = Definitions(
         "psn_api": psn_api_resource,
         "db_url": db_url_resource,
     },
-    jobs=[catalog_recheck_job, essentials_backfill_job],
-    schedules=[catalog_daily_schedule, psn_sync_schedule],
+    jobs=[catalog_recheck_job, essentials_backfill_job, essentials_auto_job],
+    schedules=[catalog_daily_schedule, psn_sync_schedule, essentials_auto_schedule],
 )

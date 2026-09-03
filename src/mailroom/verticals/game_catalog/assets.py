@@ -48,6 +48,10 @@ from mailroom.verticals.game_catalog.essentials import (
     enrich_psplus_claim_dates,
     seed_essentials_lineup,
 )
+from mailroom.verticals.game_catalog.essentials_feed import (
+    fetch_current_lineup_rows,
+    merge_new_lineup_rows,
+)
 from mailroom.verticals.game_catalog.parsers.psn import (
     normalize_title,
     parse_psn_receipt,
@@ -310,6 +314,27 @@ def essentials_claim_dates(context: AssetExecutionContext) -> None:
     context.log.info(
         f"essentials_claim_dates: dated {report['dated']}, "
         f"already-dated {report['already_dated']}, unmatched {report['unmatched']}"
+    )
+
+
+@asset(deps=["essentials_lineup"], required_resource_keys={"db_url"})
+def essentials_feed(context: AssetExecutionContext) -> None:
+    """Keep essentials_lineup current by scraping the authoritative source.
+
+    Fetches the current + next calendar year's PS+ Essential monthly list
+    (Fandom NA, the seed's source) and merges any NEW months/rows into
+    essentials_lineup. Runs daily so a newly-announced month is available to
+    date claims as soon as they're claimed (memos/
+    psplus-essentials-acquisition-date-backfill § ongoing fill). Idempotent.
+    """
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    rows = fetch_current_lineup_rows()
+    added = merge_new_lineup_rows(conn, rows)
+    conn.close()
+    context.log.info(
+        f"essentials_feed: fetched {len(rows)} lineup records from source, "
+        f"{added} new rows merged into essentials_lineup"
     )
 
 
