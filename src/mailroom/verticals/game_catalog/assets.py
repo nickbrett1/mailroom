@@ -43,6 +43,11 @@ from mailroom.db import (
 )
 from mailroom.verticals.game_catalog import dedup
 from mailroom.verticals.game_catalog.classifier import Classification, classify_item
+from mailroom.verticals.game_catalog.essentials import (
+    ESSENTIALS_MONTHS,
+    enrich_psplus_claim_dates,
+    seed_essentials_lineup,
+)
 from mailroom.verticals.game_catalog.parsers.psn import (
     normalize_title,
     parse_psn_receipt,
@@ -267,6 +272,45 @@ def psn_api_owned(context: AssetExecutionContext) -> None:
     )
     conn.close()
     context.log.info(f"psn_api_owned: {added} added, {confirmed} confirmed/updated ({len(titles)} library items)")
+
+
+@asset(required_resource_keys={"db_url"})
+def essentials_lineup(context: AssetExecutionContext) -> None:
+    """Seed the curated PS+ Essential monthly lookup table.
+
+    `essentials_lineup` is the lookup for the acquisition_date backfill
+    (memos/psplus-essentials-acquisition-date-backfill). This asset loads the
+    curated ESSENTIALS_MONTHS seed (title/platform per offer month + claim
+    window) into the table idempotently. Idempotent: re-seeding is a no-op.
+    """
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    inserted = seed_essentials_lineup(conn)
+    conn.close()
+    context.log.info(
+        f"essentials_lineup: {inserted} new lineup row(s) "
+        f"(total {len(ESSENTIALS_MONTHS)} offer-month records seeded)"
+    )
+
+
+@asset(deps=["owned_games", "essentials_lineup"], required_resource_keys={"db_url"})
+def essentials_claim_dates(context: AssetExecutionContext) -> None:
+    """Backfill acquisition_date on PS+ Essentials monthly claims.
+
+    Sets owned_games.acquisition_date = the matching essentials_lineup
+    available_from (first Tuesday of the offer month) for digital
+    ownership_class='psplus_claimed' rows with no date yet. Only titles that
+    were actually an Essentials monthly get dated; freebies/demos/Extra-catalog
+    rows stay undated and are reported (never guessed). Idempotent.
+    """
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    report = enrich_psplus_claim_dates(conn)
+    conn.close()
+    context.log.info(
+        f"essentials_claim_dates: dated {report['dated']}, "
+        f"already-dated {report['already_dated']}, unmatched {report['unmatched']}"
+    )
 
 
 @asset(deps=[psn_api_owned], required_resource_keys={"db_url", "psn_api"})

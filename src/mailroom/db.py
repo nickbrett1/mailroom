@@ -331,6 +331,29 @@ LEFT JOIN (
 ) s ON s.normalized_title = replace(replace(replace(
     g.normalized_title, '™', ''), '®', ''), '©', '');
 
+-- PS+ Essential monthly lineups (the curated lookup for acquisition_date
+-- backfill — memos/psplus-essentials-acquisition-date-backfill). One row per
+-- title/platform/month. available_from is the first Tuesday of the offer month
+-- (the structural claim date for the Essential class); available_to the end of
+-- the claim window. normalized_title uses the SAME psn.normalize_title used for
+-- owned_games.normalized_title so essentials_claim_dates can join on it.
+-- This is a curated asset we own (no clean third-party dataset exists), fed by
+-- Sony's monthly announcements; source records where each row came from.
+CREATE TABLE IF NOT EXISTS essentials_lineup (
+    id INTEGER PRIMARY KEY,
+    month TEXT NOT NULL,                -- 'YYYY-MM' of the offer
+    title TEXT NOT NULL,                -- announced display title
+    normalized_title TEXT NOT NULL,     -- psn.normalize_title(title)
+    platform TEXT,                      -- 'playstation 5' | 'playstation 4' | ...
+    available_from TEXT,                -- first Tuesday ISO date (the claim date)
+    available_to TEXT,                  -- end of claim window (optional)
+    igdb_id INTEGER,                    -- IGDB match, when known (robust join key)
+    source TEXT NOT NULL DEFAULT 'seed',
+    UNIQUE(normalized_title, platform, available_from)
+);
+CREATE INDEX IF NOT EXISTS idx_essentials_lineup_norm ON essentials_lineup(normalized_title);
+CREATE INDEX IF NOT EXISTS idx_essentials_lineup_igdb ON essentials_lineup(igdb_id);
+
 -- Source authentication (PSN PS-App OAuth refresh token, future API sources).
 -- Token lives here (not .env) so a UI can refresh it without container edits.
 CREATE TABLE IF NOT EXISTS credentials (
@@ -462,6 +485,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "owned_games", "ownership_class", "ownership_class TEXT DEFAULT 'purchased'")
         _add_column_if_missing(conn, "owned_games", "retire_reason", "retire_reason TEXT")
         _add_column_if_missing(conn, "owned_games", "game_id", "game_id INTEGER")
+    if "essentials_lineup" in tables:
+        _add_column_if_missing(conn, "essentials_lineup", "igdb_id", "igdb_id INTEGER")
     # game_stats predates the trophy-title join (created 2026-08-20 with NPWR
     # ids stuffed into psn_content_id and no title column — unusable). Recreate
     # with the NPWR key + normalized_title join.

@@ -33,6 +33,8 @@ from mailroom.verticals.game_catalog.assets import (
     catalog_views,
     classified_game_items,
     dedupe_owned_games,
+    essentials_claim_dates,
+    essentials_lineup,
     game_covers,
     game_metadata,
     igdb_matches,
@@ -119,6 +121,16 @@ catalog_recheck_job = define_asset_job(
     config={"ops": {"igdb_matches": {"config": {"recheck": True}}}},
 )
 
+# PS+ Essential acquisition-date backfill — seeds the curated essentials_lineup
+# lookup and writes acquisition_date = available_from (first Tuesday of the
+# offer month) onto digital psplus_claimed rows that lack one. Runs the enricher
+# so the historical seed backfills; manual/one-time (memos/
+# psplus-essentials-acquisition-date-backfill). Idempotent — safe to re-run.
+essentials_backfill_job = define_asset_job(
+    "essentials_backfill",
+    selection=AssetSelection.keys("essentials_lineup", "essentials_claim_dates"),
+)
+
 definitions = Definitions(
     assets=[
         raw_psn_receipts,
@@ -131,6 +143,8 @@ definitions = Definitions(
         owned_games,
         psn_api_owned,
         psn_playtime,
+        essentials_lineup,
+        essentials_claim_dates,
         igdb_matches,
         dedupe_owned_games,
         catalog_quality_repairs,
@@ -145,6 +159,6 @@ definitions = Definitions(
         "psn_api": psn_api_resource,
         "db_url": db_url_resource,
     },
-    jobs=[catalog_recheck_job],
+    jobs=[catalog_recheck_job, essentials_backfill_job],
     schedules=[catalog_daily_schedule, psn_sync_schedule],
 )
