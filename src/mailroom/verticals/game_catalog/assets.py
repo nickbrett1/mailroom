@@ -221,6 +221,55 @@ def backfill_psn_receipts(context: AssetExecutionContext) -> None:
     )
 
 
+@asset(required_resource_keys={"db_url", "msgvault"})
+def backfill_retailer_receipts(context: AssetExecutionContext) -> None:
+    """One-time full sweep of retailer receipts (digital keys + physical).
+
+    `raw_retailer_receipts` has the same forward-only/limit-200 limitation as
+    the PSN receipt asset, so older retailer purchases (e.g. a 2024 Gameflip
+    key for Spider-Man 2) were never captured. This sweeps every retailer
+    source's full history and ingests any not already stored. Idempotent.
+    """
+    conn = connect(context.resources.db_url)
+    init_db(conn)
+    client = context.resources.msgvault
+    stored = {
+        (str(r["message_id"]), r["source"])
+        for r in conn.execute("SELECT message_id, source FROM raw_receipts").fetchall()
+    }
+    ingested = 0
+    for source in RETAILER_SOURCES:
+        for sender in source.senders:
+            messages = client.search_messages(sender=sender, after=None, limit=100000)
+            for m in messages:
+                mid = int(m["id"])
+                if (str(mid), source.name) in stored:
+                    continue
+                subj = m.get("subject") or ""
+                if source.subject_contains and not any(s.lower() in subj.lower() for s in source.subject_contains):
+                    continue
+                detail = client.get_message(mid)
+                body = detail.get("body_text") or ""
+                body_html = detail.get("body_html") or ""
+                if source.body == "recover" and not body_html:
+                    body_html = recover_webview_html(body, client=client) or ""
+                upsert_raw_receipt(
+                    conn,
+                    {
+                        "message_id": str(mid),
+                        "source": source.name,
+                        "subject": subj,
+                        "sender": detail.get("from_email") or m.get("from_email") or sender,
+                        "received_at": detail.get("sent_at") or m.get("sent_at"),
+                        "body": body,
+                        "body_html": body_html,
+                    },
+                )
+                ingested += 1
+    conn.close()
+    context.log.info(f"backfill_retailer_receipts: {ingested} retailer receipts newly ingested")
+
+
 @asset(deps=[raw_psn_receipts], required_resource_keys={"db_url"})
 def parsed_purchases_digital(context: AssetExecutionContext) -> None:
     """Parse stored PSN receipts into normalized purchases."""
