@@ -31,8 +31,7 @@
   "mounts": [
     "source=mailroom-tailscale-state,target=/var/lib/tailscale,type=volume",
     "source=${localEnv:HOME}/.doppler,target=/home/vscode/.doppler,type=bind",
-    "source=gemini-cli-settings,target=/home/vscode/.gemini,type=volume",
-    "source=${localEnv:HOME}/.config/goose,target=/home/vscode/.config/goose,type=bind"
+    "source=gemini-cli-settings,target=/home/vscode/.gemini,type=volume"
   ],
   "forwardPorts": [],
   "containerEnv": {
