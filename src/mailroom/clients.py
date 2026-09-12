@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+
+_log = logging.getLogger(__name__)
 
 
 class MsgvaultClient:
@@ -314,6 +318,55 @@ class PsnAuthError(Exception):
     """PSN auth rejected (refresh token invalid/expired) — degrade, never hard-fail."""
 
 
+class PsnTransientError(PsnAuthError):
+    """A token exchange failed for a *transient* reason — the stored refresh
+    token is still good, so the credential must NOT be flipped to
+    needs_refresh.
+
+    Covers Sony 5xx / timeouts and a 400/401 whose body carries no terminal
+    OAuth error code. Observed 2026-09-12: a sync performed TWO exchanges of the
+    same valid refresh token, the second one 400'd, and the asset flipped the
+    shared `psn` credential to needs_refresh — so pshelf showed 'Stale PSN
+    Token' for a credential that was actually fine.
+
+    Subclasses PsnAuthError so existing `except PsnAuthError` fallbacks keep
+    working; assets catch it FIRST and leave the credential alone.
+    """
+
+
+# OAuth error codes that mean the stored credential is dead and a human has to
+# re-mint it (paste a fresh NPSSO). Anything else on a 400/401 is transient —
+# prefer "leave the credential valid and retry" over falsely prompting the user.
+_TERMINAL_OAUTH_ERRORS = {"invalid_grant", "invalid_client"}
+
+
+def _oauth_error_code(resp: httpx.Response) -> str | None:
+    """Extract the OAuth `error` code from a token-endpoint error body."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    code = body.get("error")
+    if isinstance(code, str):
+        return code
+    if isinstance(code, dict):  # some Sony errors nest {"error": {"code": ...}}
+        nested = code.get("code")
+        if isinstance(nested, str):
+            return nested
+    return None
+
+
+def _expiry_from_expires_in(expires_in: Any) -> str | None:
+    """`expires_in` seconds -> absolute UTC ISO-8601 stamp (or None)."""
+    try:
+        seconds = int(expires_in)
+    except (TypeError, ValueError):
+        return None
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + seconds))
+
+
 class PsnApiClient:
     """PS App OAuth + Game Library client (undocumented Sony endpoints).
 
@@ -342,23 +395,104 @@ class PsnApiClient:
     REDIRECT_URI = "com.scee.psxandroid.scecompcall://redirect"
     USER_AGENT = "com.sony.snei.np.android.sso.share.oauth.versa.USER_AGENT"
 
-    def __init__(self, refresh_token: str | None = None, client: httpx.Client | None = None, timeout: float = 30.0, client_secret: str | None = None):
+    # Refresh-derived access tokens are short-lived (expires_in ~3600s). Cache
+    # the freshest one and reuse it while unexpired so a sync performs exactly
+    # ONE exchange: psn_api_owned and psn_playtime share one client instance,
+    # and a second exchange of the same refresh token is what 400'd on
+    # 2026-09-12 and poisoned the shared credential.
+    ACCESS_TOKEN_SKEW_SECONDS = 300
+    TOKEN_EXCHANGE_ATTEMPTS = 3
+
+    def __init__(
+        self,
+        refresh_token: str | None = None,
+        client: httpx.Client | None = None,
+        timeout: float = 30.0,
+        client_secret: str | None = None,
+        access_token: str | None = None,
+        access_token_expires_at: str | None = None,
+        on_access_token: Any = None,
+    ):
         self.refresh_token = refresh_token
         self.client_secret = client_secret
+        # Seeded from the `psn_access` credential (see psn_api_resource) so a
+        # later run reuses a token that is still valid instead of exchanging.
+        self._cached_access_token = access_token
+        self._cached_access_token_expires_at = access_token_expires_at
+        # Optional hook(token, expires_at) persisting a freshly minted access
+        # token; best-effort — a write failure must never break a sync.
+        self._on_access_token = on_access_token
         headers = {"Accept": "application/json", "Accept-Language": "en-US"}
         self._client = client or httpx.Client(timeout=timeout, headers=headers)
 
+    def _fresh_cached_access_token(self) -> str | None:
+        """The cached access token if it is still comfortably unexpired."""
+        token = self._cached_access_token
+        expires_at = self._cached_access_token_expires_at
+        if not token or not expires_at:
+            return None
+        try:
+            deadline = datetime.fromisoformat(str(expires_at))
+        except ValueError:
+            return None
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=UTC)
+        if deadline.timestamp() - time.time() <= self.ACCESS_TOKEN_SKEW_SECONDS:
+            return None
+        return token
+
+    def _remember_access_token(self, token: str, expires_in: Any) -> None:
+        self._cached_access_token = token
+        self._cached_access_token_expires_at = _expiry_from_expires_in(expires_in)
+        if self._on_access_token is None:
+            return
+        try:
+            self._on_access_token(token, self._cached_access_token_expires_at)
+        except Exception as exc:  # noqa: BLE001 — persistence is best-effort
+            _log.warning("PSN: could not persist the fresh access token: %s", exc)
+
     def _access_token(self) -> str:
+        """A usable Bearer token, exchanging the refresh token only when the
+        cache is empty/expired, with a short backoff on transient failures."""
+        cached = self._fresh_cached_access_token()
+        if cached:
+            return cached
+        last: PsnTransientError | None = None
+        for attempt in range(1, self.TOKEN_EXCHANGE_ATTEMPTS + 1):
+            try:
+                return self._exchange_access_token()
+            except PsnTransientError as exc:
+                last = exc
+                if attempt >= self.TOKEN_EXCHANGE_ATTEMPTS:
+                    break
+                _log.warning(
+                    "PSN token exchange failed transiently (attempt %s/%s): %s",
+                    attempt, self.TOKEN_EXCHANGE_ATTEMPTS, exc,
+                )
+                time.sleep(min(2.0 ** (attempt - 1), 5.0))
+        raise last  # type: ignore[misc]  # only reachable after a transient error
+
+    def _exchange_access_token(self) -> str:
         resp = self._post_token(self.OAUTH_TOKEN_URL)
         if resp.status_code in (404, 405):  # older accounts/regions: legacy endpoint
             resp = self._post_token(self.LEGACY_TOKEN_URL)
         if resp.status_code in (400, 401):
-            raise PsnAuthError(f"PSN refresh token rejected (HTTP {resp.status_code})")
+            error = _oauth_error_code(resp)
+            detail = f"PSN refresh token rejected (HTTP {resp.status_code}"
+            detail += f", error={error})" if error else ")"
+            if error in _TERMINAL_OAUTH_ERRORS:
+                raise PsnAuthError(detail)
+            # No terminal code: a duplicate / rate-limited exchange, not a dead
+            # refresh token. Leave the credential alone (2026-09-12 incident).
+            raise PsnTransientError(detail)
+        if resp.status_code >= 500:
+            raise PsnTransientError(f"PSN token endpoint error (HTTP {resp.status_code})")
         resp.raise_for_status()
         data = resp.json()
         token = data.get("access_token")
         if not token:
             raise PsnAuthError("PSN token response missing access_token")
+        self._remember_access_token(token, data.get("expires_in"))
         return token
 
     def _post_token(self, url: str) -> httpx.Response:
@@ -777,10 +911,32 @@ def psn_api_resource(context) -> PsnApiClient:  # type: ignore[no-untyped-def]
     Declares its db_url dependency so Dagster injects it at resource init
     (BUG-1: without required_resource_keys, cross-resource access fails).
     """
-    from mailroom.db import connect, get_credential, init_db
+    from mailroom.db import _CLEAR, connect, get_credential, init_db, set_credential
 
-    conn = connect(context.resources.db_url)
+    db_url = context.resources.db_url
+    conn = connect(db_url)
     init_db(conn)
     cred = get_credential(conn, "psn") or {}
+    # Reuse the access token minted by an earlier run (or by the manual NPSSO
+    # refresh) while it is still valid — so a sync performs ONE exchange per
+    # token lifetime instead of one per asset.
+    access = get_credential(conn, "psn_access") or {}
     conn.close()
-    return PsnApiClient(refresh_token=cred.get("token"))
+
+    def _persist_access_token(token: str, expires_at: str | None) -> None:
+        c = connect(db_url)
+        try:
+            set_credential(
+                c, "psn_access", token=token, token_type="access_token",
+                status="valid", last_error=_CLEAR,
+                expires_at=expires_at if expires_at else _CLEAR,
+            )
+        finally:
+            c.close()
+
+    return PsnApiClient(
+        refresh_token=cred.get("token"),
+        access_token=access.get("token"),
+        access_token_expires_at=access.get("expires_at"),
+        on_access_token=_persist_access_token,
+    )

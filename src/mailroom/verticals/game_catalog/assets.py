@@ -13,6 +13,7 @@ import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 from dagster import (
@@ -23,6 +24,7 @@ from dagster import (
 
 from mailroom.clients import (
     PsnAuthError,
+    PsnTransientError,
     psn_game_list_item_to_stats,
     psn_library_item_to_game,
     psn_trophy_item_to_stats,
@@ -328,6 +330,12 @@ def psn_api_owned(context: AssetExecutionContext) -> None:
         return
     try:
         titles = context.resources.psn_api.library_titles()
+    except PsnTransientError as exc:
+        # Exchange hiccup / Sony 5xx — the refresh token is still good, so leave
+        # the credential exactly as it is and catch up on the next run.
+        context.log.warning(f"psn_api_owned: token exchange hiccup ({exc}) — credential left as-is, retrying next run")
+        conn.close()
+        return
     except PsnAuthError as exc:
         set_credential(conn, "psn", status="needs_refresh", last_error=str(exc))
         context.log.warning(f"psn_api_owned: auth degraded to needs_refresh ({exc}) — weekly retry will catch up")
@@ -451,6 +459,24 @@ def essentials_feed(context: AssetExecutionContext) -> None:
     )
 
 
+def _credential_validated_recently(cred: dict[str, Any] | None, within_seconds: int = 900) -> bool:
+    """True when a credential's `last_success` is recent enough to be trusted.
+
+    Guards against a best-effort asset (psn_playtime) downgrading the shared
+    'psn' credential that psn_api_owned validated moments earlier in the same
+    run — the 2026-09-12 'Stale PSN Token' incident.
+    """
+    if not cred or cred.get("status") != "valid" or not cred.get("last_success"):
+        return False
+    try:
+        ts = datetime.fromisoformat(str(cred["last_success"]))
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - ts).total_seconds() <= within_seconds
+
+
 @asset(deps=[psn_api_owned], required_resource_keys={"db_url", "psn_api"})
 def psn_playtime(context: AssetExecutionContext) -> None:
     """Playtime + trophy stats per title from PSN.
@@ -459,8 +485,10 @@ def psn_playtime(context: AssetExecutionContext) -> None:
     Trophy API (same Bearer token); playtime (playDuration, ISO-8601) comes
     from the store GraphQL getUserGameList (web session cookie). Both upsert
     game_stats keyed on the NPWR title id; catalog_views surfaces
-    hours_played / trophy_progress. Auth failures degrade to needs_refresh
-    like the sync.
+    hours_played / trophy_progress. A terminal auth failure (invalid_grant)
+    degrades to needs_refresh like the sync — but this asset never downgrades a
+    credential that psn_api_owned validated moments earlier, and a transient
+    exchange failure never touches it at all.
     """
     conn = connect(context.resources.db_url)
     init_db(conn)
@@ -471,9 +499,23 @@ def psn_playtime(context: AssetExecutionContext) -> None:
         return
     try:
         raw = context.resources.psn_api.trophy_titles()
+    except PsnTransientError as exc:
+        # The stored refresh token is fine (a terminal rejection is
+        # PsnAuthError); do not touch the shared 'psn' credential.
+        context.log.warning(f"psn_playtime: token exchange hiccup ({exc}) — credential left as-is")
+        conn.close()
+        return
     except PsnAuthError as exc:
-        set_credential(conn, "psn", status="needs_refresh", last_error=str(exc))
-        context.log.warning(f"psn_playtime: auth degraded to needs_refresh ({exc})")
+        # This asset shares the 'psn' credential with psn_api_owned, which runs
+        # first and marks it valid. Never clobber a credential that was
+        # validated moments ago in this same run (2026-09-12 incident: this
+        # asset's second token exchange 400'd and left the UI showing 'Stale
+        # PSN Token' for a healthy credential).
+        if _credential_validated_recently(cred):
+            context.log.warning(f"psn_playtime: auth rejected ({exc}) but psn_api_owned validated the credential this run — leaving status valid")
+        else:
+            set_credential(conn, "psn", status="needs_refresh", last_error=str(exc))
+            context.log.warning(f"psn_playtime: auth degraded to needs_refresh ({exc})")
         conn.close()
         return
     except httpx.HTTPError as exc:

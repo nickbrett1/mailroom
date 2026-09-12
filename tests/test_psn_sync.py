@@ -5,6 +5,8 @@ lifecycle, and the psn_api_owned asset merge (memos/game-catalog-pipeline
 from __future__ import annotations
 
 import tempfile
+import time
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -13,6 +15,7 @@ from dagster import build_op_context
 from mailroom.clients import (
     PsnApiClient,
     PsnAuthError,
+    PsnTransientError,
     psn_library_item_to_game,
 )
 from mailroom.db import connect, get_credential, init_db, set_credential
@@ -627,4 +630,212 @@ def test_psn_receipt_without_platform_signal_stays_generic():
     conn = connect(f"sqlite:///{db}")
     c = conn.execute("SELECT platform FROM classified_game_items").fetchone()
     assert c["platform"] == "playstation"
+    conn.close()
+
+
+# --- credential hardening: the 2026-09-12 'Stale PSN Token' incident ---------
+# A sync performed TWO refresh-token exchanges (library_titles + trophy_titles);
+# the second one 400'd and psn_playtime flipped the shared 'psn' credential to
+# needs_refresh, so pshelf showed 'Stale PSN Token' for a healthy credential.
+
+
+def test_token_exchange_400_without_error_code_is_transient():
+    """400/401 with no terminal OAuth code = transient; the refresh token is
+    still good, so the credential must not be invalidated."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error_description": "slow down"})
+
+    with pytest.raises(PsnTransientError) as excinfo:
+        _psn_client(handler).library_titles()
+    assert "HTTP 400" in str(excinfo.value)
+    # subclassed so legacy `except PsnAuthError` fallbacks (e.g. game_list) work
+    assert issubclass(PsnTransientError, PsnAuthError)
+
+
+def test_token_exchange_invalid_grant_is_terminal():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "invalid_grant", "error_description": "expired"})
+
+    with pytest.raises(PsnAuthError) as excinfo:
+        _psn_client(handler).library_titles()
+    assert not isinstance(excinfo.value, PsnTransientError)
+    assert "invalid_grant" in str(excinfo.value)
+
+
+def test_token_endpoint_5xx_is_transient():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="upstream down")
+
+    with pytest.raises(PsnTransientError):
+        _psn_client(handler).library_titles()
+
+
+def test_transient_exchange_retries_then_succeeds(monkeypatch):
+    import mailroom.clients as clients_mod
+
+    monkeypatch.setattr(clients_mod.time, "sleep", lambda _seconds: None)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth/token" in request.url.path:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(503, text="upstream down")
+            return httpx.Response(200, json=REFRESH_BODY)
+        return httpx.Response(200, json={"entitlements": [LIB_ITEMS[0]], "totalResults": 1})
+
+    titles = _psn_client(handler).library_titles()
+    assert len(titles) == 1
+    assert calls["n"] == 2
+
+
+def test_one_token_exchange_per_sync_reuses_the_access_token():
+    """library_titles + trophy_titles on one client => ONE oauth call."""
+    seen = {"oauth": 0, "bearers": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth/token" in request.url.path:
+            seen["oauth"] += 1
+            return httpx.Response(200, json=REFRESH_BODY)
+        seen["bearers"].append(request.headers["Authorization"])
+        if "trophyTitles" in request.url.path:
+            return httpx.Response(200, json={"totalResults": 0, "trophyTitles": []})
+        return httpx.Response(200, json={"entitlements": [], "totalResults": 0})
+
+    client = _psn_client(handler)
+    client.library_titles()
+    client.trophy_titles()
+    assert seen["oauth"] == 1
+    assert seen["bearers"] == ["Bearer jwt-token-123", "Bearer jwt-token-123"]
+
+
+def test_fresh_access_token_is_handed_to_the_persist_hook():
+    persisted: list[tuple[str, str | None]] = []
+    transport = httpx.MockTransport(
+        lambda r: httpx.Response(200, json=REFRESH_BODY)
+        if "oauth/token" in r.url.path
+        else httpx.Response(200, json={"entitlements": [], "totalResults": 0})
+    )
+    client = PsnApiClient(
+        refresh_token="rt-123",
+        client_secret="test-secret",
+        client=httpx.Client(transport=transport),
+        on_access_token=lambda token, expires_at: persisted.append((token, expires_at)),
+    )
+    client.library_titles()
+    assert len(persisted) == 1
+    assert persisted[0][0] == "jwt-token-123"
+    assert persisted[0][1] and persisted[0][1].endswith("Z")
+
+
+def test_cached_access_token_skips_the_exchange():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth/token" in request.url.path:
+            raise AssertionError("exchange must be skipped while the cached token is fresh")
+        return httpx.Response(200, json={"entitlements": [], "totalResults": 0})
+
+    future = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))
+    client = PsnApiClient(
+        refresh_token="rt", client_secret="test-secret",
+        access_token="cached-at", access_token_expires_at=future,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.library_titles()
+
+
+def test_expired_cached_access_token_is_re_exchanged():
+    calls = {"oauth": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth/token" in request.url.path:
+            calls["oauth"] += 1
+            return httpx.Response(200, json=REFRESH_BODY)
+        return httpx.Response(200, json={"entitlements": [], "totalResults": 0})
+
+    past = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60))
+    client = PsnApiClient(
+        refresh_token="rt", client_secret="test-secret",
+        access_token="stale", access_token_expires_at=past,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.library_titles()
+    assert calls["oauth"] == 1
+
+
+def test_transient_token_error_leaves_the_credential_untouched():
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    set_credential(conn, "psn", token="rt", status="valid", last_success="2026-09-12T01:01:03+00:00")
+    ctx = _ctx(f"sqlite:///{db}", _StubPsn([], error=PsnTransientError("PSN refresh token rejected (HTTP 400)")))
+    assets.psn_api_owned(ctx)
+    cred = get_credential(conn, "psn")
+    assert cred["status"] == "valid"
+    assert cred["last_error"] is None
+    conn.close()
+
+
+def test_transient_token_error_does_not_downgrade_playtime_credential():
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    set_credential(conn, "psn", token="rt", status="valid", last_success="2026-09-12T01:01:03+00:00")
+    ctx = _ctx(f"sqlite:///{db}", _StubPsn([], error=PsnTransientError("PSN refresh token rejected (HTTP 400)")))
+    assets.psn_playtime(ctx)
+    assert get_credential(conn, "psn")["status"] == "valid"
+    conn.close()
+
+
+def test_psn_playtime_cannot_downgrade_a_run_validated_credential():
+    """The exact incident: psn_api_owned validates the credential, then
+    psn_playtime hits a terminal-looking auth error — status stays valid."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    set_credential(conn, "psn", token="rt", status="valid", last_success=now)
+    ctx = _ctx(f"sqlite:///{db}", _StubPsn([], error=PsnAuthError("PSN refresh token rejected (HTTP 400, error=invalid_grant)")))
+    assets.psn_playtime(ctx)
+    assert get_credential(conn, "psn")["status"] == "valid"
+    conn.close()
+
+
+def test_psn_playtime_still_degrades_when_credential_is_stale():
+    """A genuinely dead token (no recent validation) still prompts the user."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    set_credential(conn, "psn", token="rt", status="valid", last_success="2026-08-01T00:00:00+00:00")
+    ctx = _ctx(f"sqlite:///{db}", _StubPsn([], error=PsnAuthError("dead refresh token")))
+    assets.psn_playtime(ctx)
+    cred = get_credential(conn, "psn")
+    assert cred["status"] == "needs_refresh"
+    assert "dead refresh token" in (cred["last_error"] or "")
+    conn.close()
+
+
+def test_psn_api_resource_seeds_and_persists_the_access_token():
+    from dagster import build_init_resource_context
+
+    from mailroom.clients import psn_api_resource
+
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    set_credential(conn, "psn", token="rt-123", status="valid")
+    future = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))
+    set_credential(conn, "psn_access", token="cached-at", token_type="access_token", status="valid", expires_at=future)
+    conn.close()
+
+    ctx = build_init_resource_context(resources={"db_url": f"sqlite:///{db}"})
+    client = psn_api_resource(ctx)
+    assert client.refresh_token == "rt-123"
+    assert client._fresh_cached_access_token() == "cached-at"
+
+    client._remember_access_token("fresh-at", 3600)
+    conn = connect(f"sqlite:///{db}")
+    row = get_credential(conn, "psn_access")
+    assert row["token"] == "fresh-at"
+    assert row["expires_at"]
     conn.close()
