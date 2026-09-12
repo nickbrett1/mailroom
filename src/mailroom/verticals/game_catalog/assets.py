@@ -407,7 +407,7 @@ def essentials_lineup(context: AssetExecutionContext) -> None:
     )
 
 
-@asset(deps=["owned_games", "essentials_lineup"], required_resource_keys={"db_url"})
+@asset(deps=["owned_games", "essentials_lineup", "essentials_feed"], required_resource_keys={"db_url"})
 def essentials_claim_dates(context: AssetExecutionContext) -> None:
     """Backfill acquisition_date on PS+ Essentials monthly claims.
 
@@ -416,6 +416,9 @@ def essentials_claim_dates(context: AssetExecutionContext) -> None:
     ownership_class='psplus_claimed' rows with no date yet. Only titles that
     were actually an Essentials monthly get dated; freebies/demos/Extra-catalog
     rows stay undated and are reported (never guessed). Idempotent.
+
+    Depends on essentials_feed so a same-run scrape is folded in BEFORE dating
+    (otherwise a newly-announced/updated month waits for the next tick).
     """
     conn = connect(context.resources.db_url)
     init_db(conn)

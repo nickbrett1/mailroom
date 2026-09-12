@@ -7,6 +7,7 @@ import os
 
 from dagster import (
     AssetSelection,
+    DefaultScheduleStatus,
     Definitions,
     ScheduleDefinition,
     define_asset_job,
@@ -79,19 +80,22 @@ catalog_daily_schedule = ScheduleDefinition(
     job=catalog_daily_job,
     cron_schedule="0 6 * * *",
     execution_timezone="America/New_York",
+    default_status=DefaultScheduleStatus.RUNNING,
 )
 
 # PSN full-library sync — every Tuesday 21:00 local (Essentials drop is the
 # first Tuesday; weekly catches late claims + mid-month Extra/Premium adds).
-# Runs the incremental enrichment tail after the sync so Tuesday's claims are
-# matched + enriched the same night. Degrades to credentials.status=
-# needs_refresh on auth failure and catches up on the next valid token
+# Re-scrapes the Essentials monthly list first (essentials_feed) so a newly
+# claimed monthly is dated the same night, then runs the incremental
+# enrichment tail. Degrades to credentials.status=needs_refresh on auth
+# failure and catches up on the next valid token
 # (memos/game-catalog-pipeline §PSN sync).
 psn_sync_job = define_asset_job(
     "psn_sync",
     selection=AssetSelection.keys(
         "psn_api_owned",
         "psn_playtime",
+        "essentials_feed",
         "essentials_claim_dates",
         "igdb_matches",
         "dedupe_owned_games",
@@ -105,6 +109,7 @@ psn_sync_schedule = ScheduleDefinition(
     job=psn_sync_job,
     cron_schedule="0 21 * * 2",
     execution_timezone="America/New_York",
+    default_status=DefaultScheduleStatus.RUNNING,
 )
 
 # Catalog recheck — re-match EVERY owned row with the exact-name/platform
@@ -128,21 +133,35 @@ catalog_recheck_job = define_asset_job(
 )
 
 # PS+ Essential acquisition-date backfill — seeds the curated essentials_lineup
-# lookup and writes acquisition_date = available_from (first Tuesday of the
-# offer month) onto digital psplus_claimed rows that lack one. Runs the enricher
-# so the historical seed backfills; manual/one-time (memos/
+# lookup, scrapes the authoritative monthly list for months the seed lacks, and
+# writes acquisition_date = available_from (first Tuesday of the offer month)
+# onto digital psplus_claimed rows that lack one. Rebuilds the read model so
+# pshelf reflects the dates. Manual/one-time (memos/
 # psplus-essentials-acquisition-date-backfill). Idempotent — safe to re-run.
 essentials_backfill_job = define_asset_job(
     "essentials_backfill",
-    selection=AssetSelection.keys("essentials_lineup", "essentials_claim_dates"),
+    selection=AssetSelection.keys(
+        "essentials_lineup",
+        "essentials_feed",
+        "essentials_claim_dates",
+        "catalog_games",
+        "catalog_views",
+    ),
 )
 
 # Essentials ongoing upkeep — scrape the authoritative monthly list for any new
-# months/rows and date newly-claimed Essential monthlies. Runs daily (lineups
-# update when Sony announces the next month). Idempotent.
+# months/rows and date newly-claimed Essential monthlies, then rebuild the
+# pshelf read model (catalog_games/catalog_views) in the same run so the date is
+# visible immediately. Runs daily (lineups update when Sony announces the next
+# month). Idempotent.
 essentials_auto_job = define_asset_job(
     "essentials_auto",
-    selection=AssetSelection.keys("essentials_feed", "essentials_claim_dates"),
+    selection=AssetSelection.keys(
+        "essentials_feed",
+        "essentials_claim_dates",
+        "catalog_games",
+        "catalog_views",
+    ),
 )
 
 # Purchase-date backfill — date purchased games that lack one from their
@@ -165,6 +184,7 @@ essentials_auto_schedule = ScheduleDefinition(
     job=essentials_auto_job,
     cron_schedule="30 8 * * *",
     execution_timezone="America/New_York",
+    default_status=DefaultScheduleStatus.RUNNING,
 )
 
 definitions = Definitions(

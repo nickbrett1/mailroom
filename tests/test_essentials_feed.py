@@ -66,6 +66,41 @@ def test_parse_yearly_wikitext():
     assert four["added"] == "2027-01-06"
 
 
+def test_parse_ignores_citation_dates():
+    """The reference block on a month's first row carries the blog date and
+    'Retrieved on <date>' — neither is the row's available_from/available_to.
+    Regression: the September 2026 page (Wobbly Life / MLB The Show 26) is
+    exactly this shape."""
+    fixture = """
+{| class="wikitable"
+! Game
+! Platform(s)
+! Date added
+! Date removed
+|-
+| 898
+| 27
+|''[[Sniper Elite: Resistance]]''
+| {{yes|PS5}} || {{yes|PS4}} || {{no|}}
+| colspan="1" rowspan="4" |September 1, 2026
+| colspan="1" rowspan="4" | -
+| rowspan="4" |<ref>[https://blog.playstation.com/2026/08/26/ps-plus-september/ PlayStation Plus Monthly Games for September] (September 1, 2026). Retrieved on September 8, 2026.</ref>
+|-
+| 900
+| 29
+|''[[Wobbly Life]]''
+| {{yes|PS5}} || {{yes|PS4}} || {{no|}}
+|}
+"""
+    rows = parse_yearly_wikitext(fixture)
+    assert [r["title"] for r in rows] == ["Sniper Elite: Resistance", "Wobbly Life"]
+    sniper, wobbly = rows
+    assert sniper["added"] == "2026-09-01"
+    assert sniper["removed"] is None  # '-' cell + stripped <ref>, not the blog/retrieved dates
+    assert wobbly["added"] == "2026-09-01"  # carried across the rowspan'd month group
+    assert wobbly["removed"] is None
+
+
 def test_merge_new_lineup_rows_idempotent_and_platform_split():
     conn = connect(f"sqlite:///{tempfile.mkdtemp()}/feed.db")
     init_db(conn)

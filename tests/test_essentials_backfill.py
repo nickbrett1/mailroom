@@ -88,6 +88,22 @@ def test_backfill_dates_only_real_monthly_claims():
     conn.close()
 
 
+def test_generic_platform_row_is_dated():
+    """A PSN-sync row whose platform is the bare 'playstation' token still dates
+    from a platform-specific lineup row (real-world: Wobbly Life claimed via the
+    2026-09 Essentials monthly)."""
+    conn = _db()
+    _owned(conn, "Wobbly Life", "playstation", "psplus_claimed")
+    _lineup(conn, "Wobbly Life", "playstation 5", "2026-09-01")
+    report = enrich_psplus_claim_dates(conn)
+    assert report == {"dated": 1, "already_dated": 0, "unmatched": 0}
+    val = conn.execute(
+        "SELECT acquisition_date FROM owned_games WHERE title = 'Wobbly Life'"
+    ).fetchone()
+    assert val["acquisition_date"] == "2026-09-01"
+    conn.close()
+
+
 def test_platform_must_match_to_date():
     conn = _db()
     # Claimed the PS5 copy, but the lineup only has the PS4 row -> no match.

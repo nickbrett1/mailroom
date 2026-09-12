@@ -46,6 +46,19 @@ _MONTH_NUM = {
     "December": 12,
 }
 
+# Citation/reference markup whose *prose* contains dates (blog announcement
+# date, "Retrieved on <date>") that must never be mistaken for the row's
+# available_from / available_to. Current-year rows carry the month's date on a
+# rowspan'd cell AND a <ref> on the first row with several more dates; without
+# stripping, removed (and in edge cases added) picks up a citation date.
+_REF_RE = re.compile(r"<ref\b[^>]*?/>|<ref\b[^>]*?>.*?</ref>", re.IGNORECASE | re.DOTALL)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _strip_references(wikitext: str) -> str:
+    """Remove <ref> citations / HTML comments so their dates can't leak in."""
+    return _HTML_COMMENT_RE.sub("", _REF_RE.sub("", wikitext))
+
 
 def _iso(date_str: str | None) -> str | None:
     """Normalize a wiki date to ISO (YYYY-MM-DD).
@@ -91,7 +104,7 @@ def parse_yearly_wikitext(wikitext: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     cur_added: str | None = None
     cur_removed: str | None = None
-    for block in re.split(r"\n\|-", wikitext):
+    for block in re.split(r"\n\|-", _strip_references(wikitext)):
         lines = [l for l in block.split("\n") if l.strip()]
         numseen = 0
         title = None
@@ -109,8 +122,10 @@ def parse_yearly_wikitext(wikitext: str) -> list[dict[str, Any]]:
         dates = _date_values(block)
         if dates:
             cur_added = dates[0]
-            if len(dates) > 1:
-                cur_removed = dates[1]
+            # A rowspan'd group's added/removed cells live on the group's first
+            # row; a '-' removed cell (open-ended window) has no second date, so
+            # reset rather than inherit the previous month's removed date.
+            cur_removed = dates[1] if len(dates) > 1 else None
         records.append({
             "title": title,
             "ps4": "{{yes|PS4}}" in block,

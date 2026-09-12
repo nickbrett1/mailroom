@@ -78,3 +78,35 @@ def test_schedules_and_jobs_registered():
     recheck = definitions.get_job_def("catalog_recheck")
     recheck_keys = {k.to_user_string() for k in recheck.asset_layer.selected_asset_keys}
     assert {"igdb_matches", "game_metadata", "catalog_views"} <= recheck_keys
+
+
+def test_essentials_upkeep_is_automatic_and_refreshes_the_read_model():
+    """PS+ Essential dates self-heal: the daily job must (a) scrape the source
+    (essentials_feed) and (b) rebuild the pshelf read model (catalog_games) in
+    the SAME run, and its schedule must actually tick without a manual start
+    (Dagster schedules default to STOPPED -> a new schedule silently never runs)."""
+    from dagster import DefaultScheduleStatus
+
+    repo = definitions.get_repository_def()
+    schedules = {s.name: s for s in repo.schedule_defs}
+    for name in ("catalog_daily_schedule", "psn_sync_schedule", "essentials_auto_schedule"):
+        assert schedules[name].default_status == DefaultScheduleStatus.RUNNING, name
+
+    auto = definitions.get_job_def("essentials_auto")
+    auto_keys = {k.to_user_string() for k in auto.asset_layer.selected_asset_keys}
+    assert {"essentials_feed", "essentials_claim_dates", "catalog_games", "catalog_views"} <= auto_keys
+
+    # weekly sync must also re-scrape before dating, so a month that appeared
+    # mid-week is picked up even if the daily job was missed.
+    sync_keys = {k.to_user_string() for k in definitions.get_job_def("psn_sync").asset_layer.selected_asset_keys}
+    assert {"essentials_feed", "essentials_claim_dates"} <= sync_keys
+
+    # deterministic order: dating depends on the scrape
+    from dagster import AssetKey
+
+    graph = definitions.resolve_asset_graph()
+    deps = {
+        d.to_user_string()
+        for d in graph.get(AssetKey("essentials_claim_dates")).parent_keys
+    }
+    assert "essentials_feed" in deps

@@ -451,12 +451,54 @@ def seed_essentials_lineup(conn: sqlite3.Connection) -> int:
     return inserted
 
 
+def _lineup_available_from(
+    conn: sqlite3.Connection, row: sqlite3.Row
+) -> str | None:
+    """Find the lineup claim date for an owned row, or None.
+
+    Join preference: (igdb_id, platform) -> (normalized_title, platform) ->
+    (normalized_title) when the owned row's platform is generic ('playstation'
+    /NULL). The PSN sync can store a cross-gen entitlement's platform as the
+    bare 'playstation' token, which never equals the lineup's
+    'playstation 4'/'playstation 5' rows — without the final fallback those
+    claims stay undated forever.
+    """
+    if row["igdb_id"]:
+        match = conn.execute(
+            """SELECT available_from FROM essentials_lineup
+               WHERE igdb_id = ? AND platform = ?
+               ORDER BY available_from LIMIT 1""",
+            (row["igdb_id"], row["platform"]),
+        ).fetchone()
+        if match:
+            return match["available_from"]
+    match = conn.execute(
+        """SELECT available_from FROM essentials_lineup
+           WHERE normalized_title = ? AND platform = ?
+           ORDER BY available_from LIMIT 1""",
+        (row["normalized_title"], row["platform"]),
+    ).fetchone()
+    if match:
+        return match["available_from"]
+    if not row["platform"] or row["platform"] == "playstation":
+        match = conn.execute(
+            """SELECT available_from FROM essentials_lineup
+               WHERE normalized_title = ?
+               ORDER BY available_from LIMIT 1""",
+            (row["normalized_title"],),
+        ).fetchone()
+        if match:
+            return match["available_from"]
+    return None
+
+
 def enrich_psplus_claim_dates(conn: sqlite3.Connection) -> dict:
     """Backfill acquisition_date on Essentials-monthly claims from the lineup.
 
     Eligible: owned, digital, ownership_class='psplus_claimed', no date yet.
     Join on (igdb_id, platform) first (robust), falling back to
-    (normalized_title, platform) -> set acquisition_date = available_from.
+    (normalized_title, platform), then (normalized_title) for generic-platform
+    rows -> set acquisition_date = available_from.
 
     Idempotent: skips rows that already have a date. Unmatched eligible claims
     (not found in the lineup: freebies/demos/Extra-catalog) are REPORTED to
@@ -473,22 +515,8 @@ def enrich_psplus_claim_dates(conn: sqlite3.Connection) -> dict:
         if row["acquisition_date"]:
             report["already_dated"] += 1
             continue
-        match = None
-        if row["igdb_id"]:
-            match = conn.execute(
-                """SELECT available_from FROM essentials_lineup
-                   WHERE igdb_id = ? AND platform = ?
-                   ORDER BY available_from LIMIT 1""",
-                (row["igdb_id"], row["platform"]),
-            ).fetchone()
-        if not match:
-            match = conn.execute(
-                """SELECT available_from FROM essentials_lineup
-                   WHERE normalized_title = ? AND platform = ?
-                   ORDER BY available_from LIMIT 1""",
-                (row["normalized_title"], row["platform"]),
-            ).fetchone()
-        if not match:
+        available_from = _lineup_available_from(conn, row)
+        if available_from is None:
             report["unmatched"] += 1
             enqueue_review(
                 conn,
@@ -507,7 +535,7 @@ def enrich_psplus_claim_dates(conn: sqlite3.Connection) -> dict:
             """UPDATE owned_games
                SET acquisition_date = ?, updated_at = datetime('now')
                WHERE id = ?""",
-            (match["available_from"], row["id"]),
+            (available_from, row["id"]),
         )
         report["dated"] += 1
     conn.commit()
