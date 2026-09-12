@@ -104,6 +104,45 @@ def test_generic_platform_row_is_dated():
     conn.close()
 
 
+def test_trademark_symbols_do_not_block_dating():
+    """Real-world regression: MLB The Show 26 (2026-09 Essentials monthly) is
+    scraped from the Fandom wiki as 'MLB The Show 26' with NO igdb_id, while the
+    owned PSN row carries the store branding 'MLB® The Show™ 26'. A plain
+    normalized_title join misses, so the claim never got a date in pshelf."""
+    conn = _db()
+    _owned(conn, "MLB® The Show™ 26", "playstation 5", "psplus_claimed")
+    conn.execute(
+        "UPDATE owned_games SET normalized_title = 'mlb® the show™ 26'"
+    )
+    conn.commit()
+    _lineup(conn, "MLB The Show 26", "playstation 5", "2026-09-01")
+    report = enrich_psplus_claim_dates(conn)
+    assert report == {"dated": 1, "already_dated": 0, "unmatched": 0}
+    val = conn.execute(
+        "SELECT acquisition_date FROM owned_games WHERE title = 'MLB® The Show™ 26'"
+    ).fetchone()
+    assert val["acquisition_date"] == "2026-09-01"
+    conn.close()
+
+
+def test_trademark_symbols_do_not_block_dating_generic_platform():
+    """Same drift but on a generic 'playstation' owned row (ambiguous PSN
+    package type), which must fall through to the trademark-insensitive
+    generic-platform join."""
+    conn = _db()
+    _owned(conn, "MLB® The Show™ 26", "playstation", "psplus_claimed")
+    conn.execute("UPDATE owned_games SET normalized_title = 'mlb® the show™ 26'")
+    conn.commit()
+    _lineup(conn, "MLB The Show 26", "playstation 5", "2026-09-01")
+    report = enrich_psplus_claim_dates(conn)
+    assert report == {"dated": 1, "already_dated": 0, "unmatched": 0}
+    val = conn.execute(
+        "SELECT acquisition_date FROM owned_games WHERE title = 'MLB® The Show™ 26'"
+    ).fetchone()
+    assert val["acquisition_date"] == "2026-09-01"
+    conn.close()
+
+
 def test_platform_must_match_to_date():
     conn = _db()
     # Claimed the PS5 copy, but the lineup only has the PS4 row -> no match.

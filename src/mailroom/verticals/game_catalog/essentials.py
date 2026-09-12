@@ -451,6 +451,20 @@ def seed_essentials_lineup(conn: sqlite3.Connection) -> int:
     return inserted
 
 
+# Trademark symbols drift between sources: PSN store titles carry '™'/'®'/'©'
+# (e.g. 'MLB® The Show™ 26') while the Fandom wiki — the source of scraped
+# essentials_lineup rows, which carry no igdb_id — omits them ('MLB The Show
+# 26'). psn.normalize_title does NOT strip these, so a plain normalized_title
+# equality never matches a wiki row and the claim stays undated. Compare
+# trademark-insensitively as a fallback.
+_TM_STRIP = "replace(replace(replace({col}, '™', ''), '®', ''), '©', '')"
+
+
+def _strip_trademarks(value: str) -> str:
+    """Drop ™/®/© so store-branded and wiki titles compare equal."""
+    return value.replace("™", "").replace("®", "").replace("©", "")
+
+
 def _lineup_available_from(
     conn: sqlite3.Connection, row: sqlite3.Row
 ) -> str | None:
@@ -462,6 +476,11 @@ def _lineup_available_from(
     bare 'playstation' token, which never equals the lineup's
     'playstation 4'/'playstation 5' rows — without the final fallback those
     claims stay undated forever.
+
+    The normalized_title fallbacks retry with ™/®/© stripped from both sides:
+    owned rows carry the store's trademark symbols while wiki-sourced lineup
+    rows don't (and wiki rows have no igdb_id to fall back on), so 'MLB® The
+    Show™ 26' must still match 'MLB The Show 26'.
     """
     if row["igdb_id"]:
         match = conn.execute(
@@ -480,12 +499,31 @@ def _lineup_available_from(
     ).fetchone()
     if match:
         return match["available_from"]
+    # Trademark-insensitive retry on the platform-specific join.
+    stripped = _strip_trademarks(row["normalized_title"])
+    match = conn.execute(
+        f"""SELECT available_from FROM essentials_lineup
+            WHERE {_TM_STRIP.format(col="normalized_title")} = ? AND platform = ?
+            ORDER BY available_from LIMIT 1""",
+        (stripped, row["platform"]),
+    ).fetchone()
+    if match:
+        return match["available_from"]
     if not row["platform"] or row["platform"] == "playstation":
         match = conn.execute(
             """SELECT available_from FROM essentials_lineup
                WHERE normalized_title = ?
                ORDER BY available_from LIMIT 1""",
             (row["normalized_title"],),
+        ).fetchone()
+        if match:
+            return match["available_from"]
+        # Trademark-insensitive retry on the generic-platform join.
+        match = conn.execute(
+            f"""SELECT available_from FROM essentials_lineup
+                WHERE {_TM_STRIP.format(col="normalized_title")} = ?
+                ORDER BY available_from LIMIT 1""",
+            (stripped,),
         ).fetchone()
         if match:
             return match["available_from"]
