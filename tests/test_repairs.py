@@ -252,6 +252,25 @@ def test_pins_subnautica_to_its_own_game():
     conn.close()
 
 
+def test_pins_mega_man_x_legacy_collection_to_first_game():
+    """'Mega Man X Legacy Collection' (the first one) was landing on the sequel
+    'Mega Man X Legacy Collection 2' (96254), so its card showed the sequel's
+    cover. The title override pins it to its own IGDB entry (96252) so each
+    collection keeps its own artwork."""
+    conn, _ = _db()
+    game = _seed(
+        conn, title="Mega Man X Legacy Collection", platform="playstation 4",
+        source="psn_api", psn_content_id="UP0102-CUSA10785_00-RXAC100000000001",
+        igdb_id=96254,  # wrongly matched to 'Mega Man X Legacy Collection 2'
+        provenance="psn_api:UP0102-CUSA10785_00-RXAC100000000001",
+    )
+    report = apply_catalog_repairs(conn)
+    assert [r["id"] for r in report.rematched] == [game]
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (game,)).fetchone()
+    assert row["igdb_id"] == 96252  # IGDB 'Mega Man X: Legacy Collection' (2018)
+    conn.close()
+
+
 def test_pins_synth_riders_to_base_game():
     """'Synth Riders' pinned to the canonical base entry (105333), which is the
     IGDB id that carries the platform-390 (PSVR2) signal — not the PS5-only

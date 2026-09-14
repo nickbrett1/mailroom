@@ -313,6 +313,11 @@ TITLE_MATCH_OVERRIDES = {
     # Below Zero cover. Pin it to its own IGDB entry (9254) so each game keeps
     # its own artwork.
     "subnautica": 9254,
+    # 'Mega Man X Legacy Collection' (the FIRST collection, 2018) — IGDB search
+    # lands it on the sequel 'Mega Man X Legacy Collection 2' (96254), so the
+    # first game's card shows the sequel's cover. Pin it to its own IGDB entry
+    # (96252, 'Mega Man X: Legacy Collection') so each keeps its own artwork.
+    "mega man x legacy collection": 96252,
     # 'Synth Riders' — IGDB search can surface a PS5-only re-listing (372492)
     # ahead of the canonical entry. Pin to the base game (105333) so the row
     # carries the IGDB platform-390 (PSVR2) signal.
