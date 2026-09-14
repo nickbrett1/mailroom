@@ -67,6 +67,12 @@ def test_igdb_search_term_strips_noise():
     assert assets.igdb_search_term("SEALED Wildermyth for Sony PlayStation 5 (PS5) w/ Monster") == "wildermyth"
     assert assets.igdb_search_term("Persona 5 Royal - PlayStation 5") == "persona 5 royal"
     assert assets.igdb_search_term("ABZÛ - PlayStation 4") == "abzu"  # accents kept
+    # PopMarket's 'Steelbook Edition for Playstation 5' must reduce to the game
+    # name — IGDB has no steelbook entry, so the whole suffix is noise.
+    assert (
+        assets.igdb_search_term("Shin Megami Tensei V: Vengeance Steelbook Edition for Playstation 5")
+        == "shin megami tensei v: vengeance"
+    )
 
 
 def test_igdb_search_terms_fallbacks():

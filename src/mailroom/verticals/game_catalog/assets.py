@@ -1126,7 +1126,8 @@ _EDITION_WORDS = (
     "collector's edition", "collectors edition", "game of the year edition",
     "special edition", "complete edition", "definitive edition", "day 1 edition",
     "cross-gen", "digital edition", "premium edition", "anniversary edition",
-    "monarch edition", "exclusive", "goty", "remastered", "remake", "version",
+    "monarch edition", "steelbook edition", "steelbook",
+    "exclusive", "goty", "remastered", "remake", "version",
 )
 
 
