@@ -24,12 +24,25 @@ def test_gamefly_ps5_parenthetical():
     assert c.classification == "playstation_game"
 
 
-def test_shopify_variant():
-    c = classify_item("Animal Well", variant="PS5")
+def test_concrete_platform_hint_resolves_the_platform():
+    """A receipt that states the platform ('Platform: Playstation 5') wins even
+    when the title names no platform — otherwise the item lands on the generic
+    'playstation' fallback (Lost In Cult / Thank Goodness You're Here!)."""
+    c = classify_item("Thank Goodness You're Here!", platform_hint="Playstation 5")
     assert c.classification == "playstation_game"
+    assert c.platform == "playstation 5"
+    assert c.reason == "platform hint"
+    # Same for the GameStop-style hint, and for PS4.
+    assert classify_item("Some Game", platform_hint="PlayStation 4").platform == "playstation 4"
+    # A generic hint still falls through to the generic keyword branch.
+    assert classify_item("Some Game", platform_hint="playstation").platform == "playstation"
 
 
-def test_switch_excluded():
+def test_instruction_manual_is_not_a_game():
+    c = classify_item(
+        "Demon's Souls PS5 Manual - PlayStation Instruction Manual (Unofficial)"
+    )
+    assert c.classification == "needs_review"
     c = classify_item("Zelda - Nintendo Switch")
     assert c.classification == "non_playstation"
 

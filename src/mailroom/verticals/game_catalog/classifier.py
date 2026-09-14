@@ -31,7 +31,34 @@ ACCESSORY_HINTS = (
 )
 # Non-game merch (LRG books/magazines/trading cards/soundtracks) — retained raw,
 # never catalogued, sent to review rather than classified as hardware.
-NON_GAME_HINTS = ("trading card", "soundtrack", "vinyl", "art of", "art book", "strategy guide", "comic", "poster")
+NON_GAME_HINTS = (
+    "trading card",
+    "soundtrack",
+    "vinyl",
+    "art of",
+    "art book",
+    "strategy guide",
+    "comic",
+    "poster",
+    # Printed matter sold by game shops (2 Old 4 Gaming's unofficial
+    # "… Instruction Manual" line) — not a game. 'instruction manual' rather
+    # than a bare 'manual' so a title like "Manual Samuel" is unaffected.
+    "instruction manual",
+)
+
+# Platform hints that name a concrete platform (Squarespace's
+# "Platform: Playstation 5", GameStop's "Platform: PlayStation 4"). A hint
+# like this is authoritative — the title alone may only say "PS4/PS5".
+_CONCRETE_PLATFORM_HINTS = {
+    "playstation 4",
+    "playstation 5",
+    "ps4",
+    "ps5",
+    "ps3",
+    "ps vita",
+    "psvita",
+    "vita",
+}
 
 
 @dataclass
@@ -87,6 +114,18 @@ def classify_item(title: str, platform_hint: str | None = None, variant: str | N
     # platform matchers so a '- PS4 & PS5' suffix doesn't snap to PS4.
     if re.search(r"\bps4\b", text) and re.search(r"\bps5\b", text):
         return Classification("playstation_game", platform="playstation 5", reason="ps4 & ps5 cross-gen")
+
+    # An explicit hint that names a concrete platform ("Platform: Playstation
+    # 5") outranks the title's wording: the receipt said PlayStation 5 even
+    # when the title carries no '- / for <platform>' suffix. Without this the
+    # item would fall through to the generic 'playstation' keyword branch,
+    # which build_games can never narrow later (a generic platform is sticky).
+    if (platform_hint or "").strip().lower() in _CONCRETE_PLATFORM_HINTS:
+        return Classification(
+            "playstation_game",
+            platform=_norm_platform(platform_hint),
+            reason="platform hint",
+        )
 
     # PlayStation detection: suffix ' - playstation 5', '(ps5)', 'for playstation', variant 'PS5'.
     ps_match = re.search(r"(?:-|for)\s*(playstation\s*[45]|ps\s*[45]|psvita|vita|ps3)", text)

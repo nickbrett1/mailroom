@@ -90,6 +90,7 @@ def test_registry_has_all_sources():
         "target", "walmart", "mercari", "ebay", "cdkeys", "gameflip", "larian",
         "pcrichard",
         "popmarket",
+        "squarespace",
     }
     # Every source has at least one sender and a parser.
     for s in RETAILER_SOURCES:
@@ -131,7 +132,29 @@ def test_parse_source_unknown_returns_empty():
     assert source_by_name("nope") is None
 
 
-def test_gamestop_source_covers_order_confirmation_sender_and_subject():
+def test_squarespace_source_covers_shared_storefront_sender():
+    """Every Squarespace-hosted shop shares no-reply@squarespace.info; the
+    subject filter keeps order confirmations (shipped emails have no prices)."""
+    sq = source_by_name("squarespace")
+    assert sq.senders == ["no-reply@squarespace.info"]
+    assert any("order confirmed" in s.lower() for s in sq.subject_contains)
+
+
+def test_parse_source_squarespace():
+    body = (
+        "Lost In Cult Order #59041 Confirmed\n"
+        "Order Summary\n"
+        "*Order #59041*\n"
+        "Placed on May 21, 2025 at 2:25 PM GMT+1\n"
+        "Thank Goodness You're Here! ( https://comms-sl-events.squarespace.info/?ref=AAA ) "
+        "£59.99 TGYH-PS Platform: Playstation 5\n"
+        "Qty: 1 £59.99 / Item\n"
+        "Subtotal £59.99 Shipping £7.00 Sales Tax £0.00 Total £66.99\n"
+    )
+    ps = parse_source("squarespace", body=body, message_id="20805")
+    assert len(ps) == 1
+    assert ps[0].order_number == "59041"
+    assert ps[0].items[0].title == "Thank Goodness You're Here!"
     """Order confirmations arrive from notifications@info.gamestop.com with
     subject 'Thank you for your order!' (msg 42957) — not the legacy
     orders@em.gamestop.com / 'Thanks for your Gamestop.com order' combo."""

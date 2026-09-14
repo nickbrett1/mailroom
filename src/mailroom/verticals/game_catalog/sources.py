@@ -27,6 +27,9 @@ from mailroom.verticals.game_catalog.parsers.mercari import parse_mercari_receip
 from mailroom.verticals.game_catalog.parsers.pcrichard import parse_pcrichard_receipt
 from mailroom.verticals.game_catalog.parsers.popmarket import parse_popmarket_receipt
 from mailroom.verticals.game_catalog.parsers.shopify import parse_shopify_receipt
+from mailroom.verticals.game_catalog.parsers.squarespace import (
+    parse_squarespace_receipt,
+)
 from mailroom.verticals.game_catalog.parsers.target import parse_target_receipt
 from mailroom.verticals.game_catalog.parsers.walmart import parse_walmart_receipt
 from mailroom.verticals.game_catalog.parsers.woot import parse_woot_receipt
@@ -137,6 +140,19 @@ RETAILER_SOURCES: list[RetailerSource] = [
         senders=["support@pcrichard.com"],
         parser=parse_pcrichard_receipt,
         subject_contains=["Thank You for your Order"],
+    ),
+    RetailerSource(
+        name="squarespace",
+        # Squarespace-hosted indie shops share ONE sender
+        # (no-reply@squarespace.info); the storefront is only the From display
+        # name — Lost In Cult, 2 Old 4 Gaming so far. The parser is
+        # storefront-agnostic and reads the generic "Order Summary" block, so
+        # this registration covers every shop on the platform. Registered after
+        # the 2025-05-21 Lost In Cult order #59041 (Thank Goodness You're Here!
+        # for PlayStation 5, £59.99) was missed — the sender was absent here.
+        senders=["no-reply@squarespace.info"],
+        parser=parse_squarespace_receipt,
+        subject_contains=["Order Confirmed"],
     ),
     RetailerSource(
         name="popmarket",

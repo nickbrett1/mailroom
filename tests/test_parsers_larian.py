@@ -73,7 +73,11 @@ def test_order_confirmation_parses():
     assert item.price == "$79.99"
     c = classify_item(item.title, platform_hint=item.platform_hint)
     assert c.classification == "playstation_game"
-    assert c.platform == "playstation"  # classifier normalizes PS5 -> playstation
+    # The parser's PS5 hint is authoritative — the title's " - Deluxe Edition
+    # PS5" suffix isn't in the '- <platform>' shape the classifier matches, so
+    # before explicit hints were honored this landed on the generic
+    # 'playstation' (which build_games can never narrow later).
+    assert c.platform == "playstation 5"
 
 
 def test_key_email_returns_none():
