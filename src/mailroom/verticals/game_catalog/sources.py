@@ -24,6 +24,7 @@ from mailroom.verticals.game_catalog.parsers.gamefly import parse_gamefly_receip
 from mailroom.verticals.game_catalog.parsers.gamestop import parse_gamestop_receipt
 from mailroom.verticals.game_catalog.parsers.larian import parse_larian_receipt
 from mailroom.verticals.game_catalog.parsers.mercari import parse_mercari_receipt
+from mailroom.verticals.game_catalog.parsers.pcrichard import parse_pcrichard_receipt
 from mailroom.verticals.game_catalog.parsers.shopify import parse_shopify_receipt
 from mailroom.verticals.game_catalog.parsers.target import parse_target_receipt
 from mailroom.verticals.game_catalog.parsers.walmart import parse_walmart_receipt
@@ -125,6 +126,16 @@ RETAILER_SOURCES: list[RetailerSource] = [
         senders=["no-reply@gameflip.com"],
         parser=parse_gameflip_receipt,
         subject_contains=["purchase of"],
+    ),
+    RetailerSource(
+        name="pcrichard",
+        # P.C. Richard & Son order confirmations ("Thank You for your Order
+        # #: …") carry the item + price. The companion "Your Order Has
+        # Shipped!" email lists the item but no price (parser -> None), so the
+        # subject filter keeps only confirmations.
+        senders=["support@pcrichard.com"],
+        parser=parse_pcrichard_receipt,
+        subject_contains=["Thank You for your Order"],
     ),
 ]
 
