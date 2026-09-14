@@ -89,6 +89,7 @@ def test_registry_has_all_sources():
         "gamestop", "amazon", "shopify", "bestbuy", "gamefly", "woot",
         "target", "walmart", "mercari", "ebay", "cdkeys", "gameflip", "larian",
         "pcrichard",
+        "popmarket",
     }
     # Every source has at least one sender and a parser.
     for s in RETAILER_SOURCES:

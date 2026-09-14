@@ -25,6 +25,7 @@ from mailroom.verticals.game_catalog.parsers.gamestop import parse_gamestop_rece
 from mailroom.verticals.game_catalog.parsers.larian import parse_larian_receipt
 from mailroom.verticals.game_catalog.parsers.mercari import parse_mercari_receipt
 from mailroom.verticals.game_catalog.parsers.pcrichard import parse_pcrichard_receipt
+from mailroom.verticals.game_catalog.parsers.popmarket import parse_popmarket_receipt
 from mailroom.verticals.game_catalog.parsers.shopify import parse_shopify_receipt
 from mailroom.verticals.game_catalog.parsers.target import parse_target_receipt
 from mailroom.verticals.game_catalog.parsers.walmart import parse_walmart_receipt
@@ -136,6 +137,16 @@ RETAILER_SOURCES: list[RetailerSource] = [
         senders=["support@pcrichard.com"],
         parser=parse_pcrichard_receipt,
         subject_contains=["Thank You for your Order"],
+    ),
+    RetailerSource(
+        name="popmarket",
+        # PopMarket (popmarket.com) order confirmations ("Your PopMarket order
+        # #…") carry the item + price inline. Registered after the 2025-01-12
+        # order 0121-2412-1125SA (Shin Megami Tensei V: Vengeance Steelbook
+        # Edition for Playstation 5) was missed — the sender was absent here.
+        senders=["noreply@popmarket.com"],
+        parser=parse_popmarket_receipt,
+        subject_contains=["Your PopMarket order"],
     ),
 ]
 
