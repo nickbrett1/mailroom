@@ -226,6 +226,7 @@ _GENERIC_PLATFORMS = {None, "", "playstation", "ps"}
 PLATFORM_OVERRIDES: dict[int, str] = {
     172672: "playstation 4",    # Aspire: Ina's Tale
     207018: "playstation 5",    # Atari 50: The Anniversary Celebration
+    116634: "playstation 5",    # Beyond a Steel Sky (Beyond a SteelBook Edition, Amazon 113-7134038-7289042)
     26676:  "playstation 4",    # Kingdom Hearts 0.2: Birth by Sleep - A Fragmentary Passage
     1226:   "playstation 4",    # Kingdom Hearts 3D: Dream Drop Distance
     1224:   "playstation 4",    # Kingdom Hearts Birth by Sleep

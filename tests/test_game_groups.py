@@ -392,6 +392,9 @@ def test_platform_and_psvr2_overrides():
         _r(4, "Atari 50: The Anniversary Celebration", "playstation", 207018),
         _r(5, "Kingdom Hearts II", "playstation", 1221),
         _r(6, "Synth Riders", "playstation", 105333),
+        # Amazon SteelBook order landed on generic 'playstation' (the classifier's
+        # 'keyword' branch — the title has no '- PlayStation 5' suffix token).
+        _r(8, "Beyond a Steel Sky", "playstation", 116634),
         # control — not in the override map
         _r(7, "Uncharted 4", "playstation", 14731),
     ]
@@ -405,6 +408,9 @@ def test_platform_and_psvr2_overrides():
     # full catalog title still overridden via its igdb_id (the bug this fixes)
     assert by_title["Atari 50: The Anniversary Celebration"]["platform"] == "playstation 5"
     assert by_title["Kingdom Hearts II"]["platform"] == "playstation 4"
+    # Amazon SteelBook receipt row stored a generic platform; the override pins
+    # it to the PS5 the user actually owns.
+    assert by_title["Beyond a Steel Sky"]["platform"] == "playstation 5"
     # control is left generic (no auto signal, not overridden)
     assert by_title["Uncharted 4"]["platform"] == "playstation"
     assert by_title["Uncharted 4"]["is_psvr2"] == 0
