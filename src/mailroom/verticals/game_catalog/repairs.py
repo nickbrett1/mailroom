@@ -678,6 +678,10 @@ def _clean_catalog_title(title: str) -> str:
     t = re.sub(rf"\s*[-–—]\s*{multi}\s*$", "", t, flags=re.IGNORECASE)
     # trailing bare 'PS4 & PS5' / 'PlayStation 4'
     t = re.sub(rf"\s+{multi}\s*$", "", t, flags=re.IGNORECASE)
+    # Dangling connector left by a 'Title for <Platform>' suffix (PopMarket's
+    # 'Shin Megami Tensei V: Vengeance Steelbook Edition for Playstation 5'):
+    # the platform token is stripped above, so the trailing ' for' must go too.
+    t = re.sub(r"\s+for\s*$", "", t, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", t).strip(" -–—:;") if t else t
 
 

@@ -679,6 +679,29 @@ def test_title_cleanup_strips_platform_suffix_and_more_items():
     conn.close()
 
 
+def test_title_cleanup_strips_dangling_for_from_platform_suffix():
+    """PopMarket lists items as 'Title for Playstation 5' (no dash). Stripping
+    the platform token used to leave a dangling 'Steelbook Edition for'; the
+    connector must go too."""
+    conn, _ = _db()
+    pid = _seed(
+        conn,
+        title="Shin Megami Tensei V: Vengeance Steelbook Edition for Playstation 5",
+        platform="playstation 5",
+        format="physical",
+        source="popmarket",
+        order_number="0121-2412-1125SA",
+        igdb_id=None,
+    )
+    report = apply_catalog_repairs(conn)
+    assert report.retired == []
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (pid,)).fetchone()
+    assert row["title"] == "Shin Megami Tensei V: Vengeance Steelbook Edition"
+    assert row["normalized_title"] == "shin megami tensei v: vengeance steelbook edition"
+    assert row["is_owned"] == 1
+    conn.close()
+
+
 def test_title_cleanup_strips_stray_quote_from_more_items_tail():
     """The Amazon listing summary can carry a stray wrapping quote, e.g.
     'Diablo IV - PlayStation 5\" and 1 more item'. The ' and N more items' tail
