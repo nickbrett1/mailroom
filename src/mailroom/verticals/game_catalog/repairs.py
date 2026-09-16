@@ -163,8 +163,10 @@ COLLECTION_SPLITS: dict[int, list[dict]] = {
     168670: [  # Uncharted: Legacy of Thieves Collection (PS5 remasters of
                # Uncharted 4: A Thief's End + Uncharted: The Lost Legacy). The
                # collection card hides The Lost Legacy, so it is broken out as
-               # its own entry. Uncharted 4 is already owned (PS+ PS4), so that
-               # member merges into it; Lost Legacy gets a fresh PS5 row.
+               # its own entry. Both members get a PS5 physical row: the copy
+               # of Uncharted 4 owned as a PS4 digital PS+ claim is a DIFFERENT
+               # edition (different platform + format), so the collection's PS5
+               # disc must not merge into it (see _is_same_edition).
         {"title": "Uncharted 4: A Thief's End", "igdb_id": 7331, "platform": "playstation 5"},
         {"title": "Uncharted: The Lost Legacy", "igdb_id": 26193, "platform": "playstation 5"},
     ],
@@ -217,22 +219,51 @@ COLLECTION_TITLES: dict[int, list[str]] = {
 }
 
 
-def _existing_owned_by_key(conn, member: dict) -> dict | None:
-    """An owned row that already represents this member game (same igdb_id, or
-    the same canonical grouping key so 'BioShock Infinite' matches an already-
-    owned 'BioShock Infinite: The Complete Edition'), else None."""
+# Platform values that carry no PS4/PS5 signal, so they can't contradict a
+# member's concrete platform (mirrors dedup._GENERIC_PLATFORMS).
+_GENERIC_PLATFORMS = {None, "", "playstation", "ps"}
+
+
+def _is_same_edition(row, member: dict, fmt: str | None) -> bool:
+    """True when an already-owned row is the SAME edition as a collection member.
+
+    Edition = concrete platform + format — exactly the fields that make two
+    owned rows distinct under the (igdb_id, platform, format) dedup key. A
+    collection's PS5 physical disc therefore never collapses into an owned PS4
+    digital row (the Uncharted: Legacy of Thieves case: PS5 remaster disc vs a
+    PS4 digital PS+ claim of Uncharted 4). A generic 'playstation'/'ps' row
+    can't contradict the member, so it still counts as a match.
+    """
+    existing_plat = (row["platform"] or "").lower() or None
+    member_plat = (member.get("platform") or "").lower() or None
+    if existing_plat not in _GENERIC_PLATFORMS and member_plat and existing_plat != member_plat:
+        return False
+    return not (fmt and (row["format"] or "").lower() != fmt.lower())
+
+
+def _existing_owned_by_key(conn, member: dict, fmt: str | None = None) -> dict | None:
+    """An already-owned row that represents THIS EDITION of the member game
+    (same igdb_id — or the same canonical grouping key so 'BioShock Infinite'
+    matches an already-owned 'BioShock Infinite: The Complete Edition' — AND
+    the same platform/format), else None.
+
+    Edition-aware: a collection member only merges into a genuinely identical
+    edition; a different edition (e.g. the collection's PS5 physical copy vs an
+    already-owned PS4 digital copy) gets its own row so both editions stay
+    visible, matching the catalog's edition model."""
     from mailroom.verticals.game_catalog.game_groups import canonical_title
 
     if member.get("igdb_id"):
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id = ?",
             (member["igdb_id"],),
-        ).fetchone()
-        if row:
-            return dict(row)
+        ).fetchall()
+        for r in rows:
+            if _is_same_edition(r, member, fmt):
+                return dict(r)
     key = canonical_title(member["title"])
     for r in conn.execute("SELECT * FROM owned_games WHERE is_owned = 1").fetchall():
-        if canonical_title(r["normalized_title"]) == key:
+        if canonical_title(r["normalized_title"]) == key and _is_same_edition(r, member, fmt):
             return dict(r)
     return None
 
@@ -247,7 +278,7 @@ def _split_collection(conn, row, members: list[dict], report: RepairReport) -> N
     report.retired.append({"id": row["id"], "title": row["title"], "reason": "collection_split"})
     prov_parts = provenance_parts(row["provenance"])
     for m in members:
-        existing = _existing_owned_by_key(conn, m)
+        existing = _existing_owned_by_key(conn, m, row["format"])
         prov = merge_provenance(existing["provenance"] if existing else None,
                                 ", ".join(prov_parts) if prov_parts else row["provenance"])
         if existing:

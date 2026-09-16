@@ -450,11 +450,13 @@ def test_splits_persona_endless_night_collection():
 
 def test_splits_uncharted_legacy_of_thieves_collection():
     """'Uncharted: Legacy of Thieves Collection' (one PS5 physical receipt) is
-    retired and broken out: Uncharted 4 (already owned, PS4 PS+) merges the
-    collection receipt into its provenance, and The Lost Legacy gets a fresh
-    owned row so it's no longer hidden inside the collection card."""
+    retired and broken into its two games. The already-owned PS4 digital PS+
+    copy of Uncharted 4 is a DIFFERENT edition (platform + format) from the
+    collection's PS5 physical disc, so it must NOT absorb the receipt — a PS5
+    physical Uncharted 4 row is created alongside it, matching The Lost Legacy
+    (regression: the PS5 disc used to vanish into the PS4 digital row)."""
     conn, _ = _db()
-    uncharted4 = _seed(
+    uncharted4_digital = _seed(
         conn, title="UNCHARTED 4: A Thief’s End", platform="playstation 4",
         source="psn_receipt", psn_content_id="UP9000-CUSA00341_00-UNCHARTED0000000",
         igdb_id=7331, ownership_class="psplus_claimed",
@@ -467,11 +469,20 @@ def test_splits_uncharted_legacy_of_thieves_collection():
         provenance="amazon:112-8319987-1313862:Uncharted: Legacy of Thieves Collection",
     )
     apply_catalog_repairs(conn)
-    # collection retired; Uncharted 4 kept (receipt merged), Lost Legacy created
     assert conn.execute("SELECT * FROM owned_games WHERE id = ?", (coll,)).fetchone()["is_owned"] == 0
-    u4 = conn.execute("SELECT * FROM owned_games WHERE id = ?", (uncharted4,)).fetchone()
-    assert u4["is_owned"] == 1
-    assert "amazon:112-8319987-1313862:Uncharted: Legacy of Thieves Collection" in (u4["provenance"] or "")
+    # the PS4 digital PS+ row is untouched (still owned, no merged provenance)
+    u4d = conn.execute("SELECT * FROM owned_games WHERE id = ?", (uncharted4_digital,)).fetchone()
+    assert u4d["is_owned"] == 1
+    assert "amazon:112-8319987-1313862" not in (u4d["provenance"] or "")
+    # a separate PS5 physical Uncharted 4 row now exists with the receipt
+    u4p = conn.execute(
+        """SELECT * FROM owned_games WHERE is_owned = 1 AND igdb_id = 7331
+           AND platform = 'playstation 5' AND format = 'physical'"""
+    ).fetchone()
+    assert u4p is not None and u4p["id"] != uncharted4_digital
+    assert u4p["title"] == "Uncharted 4: A Thief's End"
+    assert "amazon:112-8319987-1313862:Uncharted: Legacy of Thieves Collection" in (u4p["provenance"] or "")
+    # Lost Legacy gets its own PS5 physical row
     lost = conn.execute(
         "SELECT * FROM owned_games WHERE igdb_id = 26193 AND is_owned = 1"
     ).fetchone()
