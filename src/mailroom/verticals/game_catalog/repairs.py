@@ -322,6 +322,11 @@ TITLE_MATCH_OVERRIDES = {
     # ahead of the canonical entry. Pin to the base game (105333) so the row
     # carries the IGDB platform-390 (PSVR2) signal.
     "synth riders": 105333,
+    # "JoJo's Bizarre Adventure: All-Star Battle R" — IGDB search lands the
+    # digital (psn_api) row on the separate "… - Collector's Edition" entry
+    # (203508), so the card shows the Collector's Edition art. The owner has
+    # the REGULAR edition, so pin to the base game (194208).
+    "jojo's bizarre adventure all-star battle r": 194208,
 }
 
 
@@ -330,9 +335,13 @@ from mailroom.verticals.game_catalog.game_groups import canonical_title
 
 def _title_match_key(normalized_title: str | None) -> str:
     """Symbol-stripped key for TITLE_MATCH_OVERRIDES (normalized titles keep
-    '™'/colons, e.g. 'batman™: arkham knight')."""
+    '™'/colons, e.g. 'batman™: arkham knight').
+
+    Curly/backtick apostrophes are folded away too, so the SAME game's rows
+    that normalize differently ('jojo's…' from psn_api vs 'jojo’s…' from a
+    retailer receipt) share one override key."""
     s = (normalized_title or "").lower()
-    s = re.sub(r"[™®©&()\[\]:,;]", " ", s)
+    s = re.sub(r"[™®©&()\[\]:,;’‘ʼ`]", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
 

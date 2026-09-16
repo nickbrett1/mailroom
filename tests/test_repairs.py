@@ -289,6 +289,44 @@ def test_pins_synth_riders_to_base_game():
     conn.close()
 
 
+def test_pins_jojo_all_star_battle_r_to_regular_edition():
+    """The digital (psn_api) row landed on the separate IGDB
+    "… - Collector's Edition" entry (203508), so the card showed the Collector's
+    Edition art. The title override pins it to the base game (194208) — the
+    regular edition the owner actually has."""
+    conn, _ = _db()
+    digital = _seed(
+        conn, title="JoJo's Bizarre Adventure: All-Star Battle R",
+        platform="playstation 5", format="digital",
+        source="psn_api", psn_content_id="UP0700-PPSA04220_00-JASBRMAINGAME000",
+        igdb_id=203508,  # wrongly matched to '… - Collector's Edition'
+        provenance="psn_api:UP0700-PPSA04220_00-JASBRMAINGAME000",
+    )
+    report = apply_catalog_repairs(conn)
+    assert [r["id"] for r in report.rematched] == [digital]
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (digital,)).fetchone()
+    assert row["igdb_id"] == 194208  # IGDB base game (regular edition)
+    conn.close()
+
+
+def test_jojo_override_key_folds_curly_apostrophe():
+    """The physical receipt row normalizes with a curly apostrophe ('jojo’s…')
+    while the psn_api row uses a straight one — the override key must match
+    both, and an already-correct row must not be re-matched."""
+    conn, _ = _db()
+    physical = _seed(
+        conn, title="JoJo\u2019s Bizarre Adventure: All-Star Battle R",
+        platform="playstation", format="physical",
+        source="woot", order_number="84999176", igdb_id=194208,
+        provenance="woot:84999176:JoJo\u2019s Bizarre Adventure: All-Star Battle R",
+    )
+    report = apply_catalog_repairs(conn)
+    assert report.rematched == []
+    row = conn.execute("SELECT * FROM owned_games WHERE id = ?", (physical,)).fetchone()
+    assert row["igdb_id"] == 194208  # unchanged
+    conn.close()
+
+
 def test_pins_never_alone_to_canonical_entry():
     """'Never Alone' was matching IGDB 273575 ('Never Alone'), which carries
     bogus/placeholder art (black background with red text). Pinned to the
