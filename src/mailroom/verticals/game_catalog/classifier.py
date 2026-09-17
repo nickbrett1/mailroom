@@ -61,6 +61,16 @@ _CONCRETE_PLATFORM_HINTS = {
 }
 
 
+# A line item that is *only* a console model name ("PlayStation 5", "Sony
+# PlayStation 4", "PS5") is hardware, not a game. GameStop bundle shipment
+# notices itemize the console next to its bundled games (msgvault msg 66500,
+# order 1100000027339767); without this the bare "PlayStation 5" line would
+# fall through to the generic 'playstation' keyword branch and enter the
+# catalog as a game. Anchored full-match so a real title that merely mentions
+# a console ("PlayStation VR Worlds") is unaffected.
+_CONSOLE_MODEL_RE = re.compile(r"^(?:sony\s+)?(?:playstation|ps)\s*[1-5]$", re.IGNORECASE)
+
+
 @dataclass
 class Classification:
     classification: str  # playstation_game | non_playstation | accessory_hardware | needs_review
@@ -90,6 +100,11 @@ def classify_item(title: str, platform_hint: str | None = None, variant: str | N
     'for PlayStation 5', console keywords. Accessories excluded or reviewed.
     """
     text = f"{title} {platform_hint or ''} {variant or ''}".lower()
+
+    # A bare console model line (a bundle shipment itemizing the console) is
+    # hardware, not a game.
+    if _CONSOLE_MODEL_RE.match(title.strip()):
+        return Classification("accessory_hardware", reason="console hardware")
 
     # Accessory/hardware first — they often mention PlayStation.
     # Word-boundary matching (optional plural) so 'stand' doesn't hit

@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 from mailroom.verticals.game_catalog.classifier import classify_item
-from mailroom.verticals.game_catalog.parsers.gamestop import parse_gamestop_receipt
+from mailroom.verticals.game_catalog.parsers.gamestop import (
+    parse_gamestop_receipt,
+    parse_gamestop_shipment,
+)
 
 # --- Real format: 2022 template, multi-item, explicit Platform lines ---
 MULTI_ITEM_2022 = """
@@ -225,6 +228,80 @@ Estimated Total
 $54.41
 """
 
+# --- Real format: 2021 SHIPMENT notice that itemizes a console BUNDLE ---
+# (msgvault msg 66500, orders@em.gamestop.com, sent 2021-03-02T00:11Z =
+# 2021-03-01 19:11 EST, order 1100000027339767). The companion confirmation
+# (msg 66674) listed the whole bundle as ONE line, so the bundled game was
+# only itemized here.
+SHIPMENT_BUNDLE_2021 = """
+GameStop, Inc.
+https://www.gamestop.com
+
+Your package is on the way!
+
+Ship to: 80 RIVERSIDE BLVD
+
+Estimated Delivery Date: Mar 05
+
+Tracking Number
+
+981223339919
+
+Track your package
+
+Order Number:
+1100000027339767
+
+Order Date: 02/23/2021
+
+View Order Details
+
+Your Item(s)
+
+Sony DualSense Wireless Controller
+
+QTY: 1
+
+$69.99
+
+PlayStation 5
+
+QTY: 1
+
+$500.01
+
+Marvel's Spider-Man: Miles Morales Ultimate Launch Edition
+
+QTY: 1
+
+$69.99
+
+Gift Card, $20 (Web Only)
+
+QTY: 1
+
+$20.00
+
+ORDER SUMMARY
+
+Subtotal
+
+$659.99
+
+Shipping & Handling
+
+FREE
+
+Estimated Tax
+
+$56.80
+
+Estimated Total
+
+$716.79
+"""
+
+
 # --- Real format: shipped email = no new facts (msg 51696) ---
 SHIPPED_2023 = """
 GameStop, Inc.
@@ -329,3 +406,59 @@ def test_unrelated_body_returns_none():
 
 def test_gamestop_confirm_without_order_number_returns_none():
     assert parse_gamestop_receipt("Thank you for your order, Nick!\nno order here") is None
+
+
+# --- Shipment notices itemize a bundle's contents ---------------------------
+
+
+def test_shipment_bundle_itemizes_hidden_game():
+    p = parse_gamestop_shipment(SHIPMENT_BUNDLE_2021, message_id="66500")
+    assert p is not None
+    assert p.order_number == "1100000027339767"
+    assert p.purchased_at == "02/23/2021"
+    assert [i.title for i in p.items] == [
+        "Sony DualSense Wireless Controller",
+        "PlayStation 5",
+        "Marvel's Spider-Man: Miles Morales Ultimate Launch Edition",
+        "Gift Card, $20 (Web Only)",
+    ]
+    miles = p.items[2]
+    assert miles.price == "$69.99"
+    assert miles.qty == 1
+    assert p.subtotal == "$659.99"
+    assert p.total == "$716.79"
+
+
+def test_shipment_console_and_accessories_are_hardware():
+    """The bundle's console / controller / gift card must not enter the catalog;
+    only the itemized game survives the platform gate."""
+    assert classify_item("PlayStation 5").classification == "accessory_hardware"
+    assert classify_item("Sony DualSense Wireless Controller").classification == "accessory_hardware"
+    assert classify_item("Gift Card, $20 (Web Only)").classification == "accessory_hardware"
+    miles = classify_item(
+        "Marvel's Spider-Man: Miles Morales Ultimate Launch Edition",
+        platform_hint="playstation 5",
+    )
+    assert miles.classification == "playstation_game"
+    assert miles.platform == "playstation 5"
+
+
+def test_shipment_is_not_parsed_as_a_confirmation():
+    assert parse_gamestop_receipt(SHIPMENT_BUNDLE_2021, message_id="66500") is None
+
+
+def test_shipment_2023_template_itemized():
+    """The 2023 'Your GameStop order has shipped' template itemizes too; its
+    titles match the confirmation, so (order_number, title) dedupes them."""
+    p = parse_gamestop_shipment(SHIPPED_2023, message_id="51696")
+    assert p is not None
+    assert p.order_number == "1100000055868592"
+    assert [i.title for i in p.items] == [
+        "The Pathless - PlayStation 5",
+        "Assassin's Creed Valhalla - PlayStation 4",
+        "Untitled Goose Game - PlayStation 4",
+    ]
+
+
+def test_unrelated_shipment_body_returns_none():
+    assert parse_gamestop_shipment("some random email about nothing") is None

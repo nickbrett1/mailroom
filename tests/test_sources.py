@@ -235,3 +235,80 @@ def test_parse_source_gamestop_2023_confirmation():
         "Ghostwire: Tokyo Standard Edition - PlayStation 5",
     ]
     assert ps[0].total == "$52.25"
+
+
+def test_gamestop_source_watches_shipment_notices():
+    """Shipment notices must be ingested: a bundle confirmation hides its games
+    (msg 66500 itemizes the bundled Spider-Man: Miles Morales)."""
+    gs = source_by_name("gamestop")
+    assert any("has shipped" in s for s in gs.subject_contains)
+
+
+# Real GameStop shipment notice (msgvault 66500, 2021-03-01, order
+# 1100000027339767) — the console bundle was one line in the confirmation; the
+# shipment itemizes the bundled game.
+GAMESTOP_SHIPMENT = """Your package is on the way!
+Ship to: 80 RIVERSIDE BLVD
+
+Order Number:
+1100000027339767
+
+Order Date: 02/23/2021
+
+View Order Details
+
+Your Item(s)
+
+Sony DualSense Wireless Controller
+
+QTY: 1
+
+$69.99
+
+PlayStation 5
+
+QTY: 1
+
+$500.01
+
+Marvel's Spider-Man: Miles Morales Ultimate Launch Edition
+
+QTY: 1
+
+$69.99
+
+Gift Card, $20 (Web Only)
+
+QTY: 1
+
+$20.00
+
+ORDER SUMMARY
+
+Subtotal
+
+$659.99
+
+Shipping & Handling
+
+FREE
+
+Estimated Tax
+
+$56.80
+
+Estimated Total
+
+$716.79
+"""
+
+
+def test_parse_source_gamestop_shipment_fallback():
+    """The gamestop dispatch falls back to the shipment parser when the body is
+    not an order confirmation, recovering the itemized bundle contents."""
+    ps = parse_source("gamestop", body=GAMESTOP_SHIPMENT, message_id="66500")
+    assert len(ps) == 1
+    assert ps[0].order_number == "1100000027339767"
+    titles = [i.title for i in ps[0].items]
+    assert "Marvel's Spider-Man: Miles Morales Ultimate Launch Edition" in titles
+    assert ps[0].total == "$716.79"

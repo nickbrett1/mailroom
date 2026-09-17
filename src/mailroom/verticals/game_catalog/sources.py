@@ -21,7 +21,10 @@ from mailroom.verticals.game_catalog.parsers.common import Purchase
 from mailroom.verticals.game_catalog.parsers.ebay import parse_ebay_receipt
 from mailroom.verticals.game_catalog.parsers.gameflip import parse_gameflip_receipt
 from mailroom.verticals.game_catalog.parsers.gamefly import parse_gamefly_receipt
-from mailroom.verticals.game_catalog.parsers.gamestop import parse_gamestop_receipt
+from mailroom.verticals.game_catalog.parsers.gamestop import (
+    parse_gamestop_receipt,
+    parse_gamestop_shipment,
+)
 from mailroom.verticals.game_catalog.parsers.larian import parse_larian_receipt
 from mailroom.verticals.game_catalog.parsers.mercari import parse_mercari_receipt
 from mailroom.verticals.game_catalog.parsers.pcrichard import parse_pcrichard_receipt
@@ -53,7 +56,17 @@ RETAILER_SOURCES: list[RetailerSource] = [
         # sender used "Thanks for your Gamestop.com order" — keep both.
         senders=["orders@em.gamestop.com", "notifications@info.gamestop.com"],
         parser=parse_gamestop_receipt,
-        subject_contains=["Thank you for your order", "Thanks for your Gamestop.com order"],
+        # Shipment notices carry new facts when the confirmation hid a console
+        # BUNDLE as one line: msg 66500 (order 1100000027339767) itemizes the
+        # bundled "Marvel's Spider-Man: Miles Morales Ultimate Launch Edition".
+        # Ordinary shipment items match the confirmation titles, so the
+        # (order_number, title) key dedupes them — never double counted.
+        subject_contains=[
+            "Thank you for your order",
+            "Thanks for your Gamestop.com order",
+            "Your item(s) has shipped",
+            "Your GameStop order has shipped",
+        ],
     ),
     RetailerSource(
         name="amazon",
@@ -203,6 +216,13 @@ def parse_source(
         return [p] if p else []
     if name == "shopify":
         p = parse_shopify_receipt(body_text=body, body_html=body_html, message_id=message_id)
+        return [p] if p else []
+    if name == "gamestop":
+        # Confirmation first; fall back to the shipment itemization (a bundle
+        # confirmation hides its games — see parse_gamestop_shipment).
+        p = parse_gamestop_receipt(body, message_id=message_id)
+        if p is None:
+            p = parse_gamestop_shipment(body, message_id=message_id)
         return [p] if p else []
     source = source_by_name(name)
     if source is None:

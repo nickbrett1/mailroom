@@ -52,6 +52,19 @@ def test_accessory_reviewed():
     assert c.classification == "accessory_hardware"
 
 
+def test_bare_console_model_is_hardware():
+    """A bundle shipment notice itemizes the console as a bare 'PlayStation 5'
+    line — that is hardware, not a game (it must not fall through to the
+    generic 'playstation' keyword branch)."""
+    assert classify_item("PlayStation 5").classification == "accessory_hardware"
+    assert classify_item("PlayStation 4").classification == "accessory_hardware"
+    assert classify_item("PS5").classification == "accessory_hardware"
+    assert classify_item("Sony PlayStation 5").classification == "accessory_hardware"
+    # A real title that merely mentions a console is unaffected.
+    assert classify_item("PlayStation VR Worlds").classification == "playstation_game"
+    assert classify_item("PlayStation 5 DualSense Charging Station").classification == "accessory_hardware"
+
+
 def test_ambiguous_review():
     c = classify_item("Some Vague Product")
     assert c.classification == "needs_review"
