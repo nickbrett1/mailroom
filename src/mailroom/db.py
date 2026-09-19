@@ -163,6 +163,20 @@ CREATE TABLE IF NOT EXISTS games (
 );
 CREATE INDEX IF NOT EXISTS idx_games_norm ON games(normalized_title);
 CREATE INDEX IF NOT EXISTS idx_games_igdb ON games(igdb_id);
+
+-- User-set play state per logical game — 'played' | 'unplayed' | 'completed'
+-- (the shelf's filter / per-card editor). Deliberately a SEPARATE table keyed
+-- by a stable game identity rather than a column on `games`: the catalog_games
+-- asset rebuilds `games` with DELETE + INSERT on every materialization, so a
+-- flag stored there would be wiped on each sync. Key is 'igdb:<igdb_id>' once
+-- the game is matched, else 'title:<normalized_title>'. catalog_games exposes
+-- it as play_state, preferring the igdb key and falling back to the title key
+-- so state set BEFORE a later IGDB match still survives that match.
+CREATE TABLE IF NOT EXISTS game_play_state (
+    game_key TEXT PRIMARY KEY,
+    play_state TEXT NOT NULL CHECK (play_state IN ('played', 'unplayed', 'completed')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 -- Dedup guard (memos/catalog-dedup-fix): at most one OWNED row per enriched
 -- (igdb_id, platform, format). format is part of the key because a digital +
 -- physical copy of the same game legitimately coexist (the memo's open
@@ -309,6 +323,17 @@ SELECT
     g.provenance,
     g.editions,
     g.is_psvr2,
+    -- User-set play state ('played'|'unplayed'|'completed') from
+    -- game_play_state, keyed by the game's stable identity. Prefer the igdb
+    -- key, fall back to the title key so state set before a game was matched
+    -- remains visible after it is matched. NULL = never set (UI defaults it to
+    -- 'unplayed'). A scalar subquery (not a JOIN) keeps the view 1:1 per game.
+    COALESCE(
+        (SELECT ps.play_state FROM game_play_state ps
+          WHERE ps.game_key = 'igdb:' || g.igdb_id),
+        (SELECT ps.play_state FROM game_play_state ps
+          WHERE ps.game_key = 'title:' || g.normalized_title)
+    ) AS play_state,
     m.payload AS igdb_payload,
     CAST(json_extract(m.payload, '$.total_rating') AS REAL) AS rating,
     CAST(json_extract(m.payload, '$.aggregated_rating') AS REAL) AS aggregated_rating,
