@@ -316,3 +316,103 @@ def get_credential_for_test(conn):
     from mailroom.db import get_credential
 
     return get_credential(conn, "psn")
+
+
+def _make_game(igdb_id=None):
+    """Insert a canonical `games` row (as the catalog_games asset would) and
+    return its id, so the catalog_games view can be read for play_state."""
+    from mailroom.db import connect
+
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    cur = conn.execute(
+        """INSERT INTO games(title, normalized_title, igdb_id, platform, platforms,
+               formats, ownership_classes, num_editions, purchased, editions)
+           VALUES ('BELOW', 'below', ?, 'playstation 4', 'playstation 4',
+                   'digital', 'purchased', 1, 1, '[]')""",
+        (igdb_id,),
+    )
+    gid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return gid
+
+
+def test_play_state_set_by_game_id_and_read_from_view(client):
+    """A play state set for a game is exposed on catalog_games.play_state
+    (NULL until set — the UI defaults that to 'unplayed')."""
+    from mailroom.db import connect
+
+    gid = _make_game()
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    before = conn.execute(
+        "SELECT play_state FROM catalog_games WHERE game_id = ?", (gid,)
+    ).fetchone()
+    conn.close()
+    assert before["play_state"] is None
+
+    res = client.post("/manual/game/play-state", json={"game_id": gid, "state": "Completed"})
+    assert res.status_code == 200
+    assert res.json() == {"game_key": "title:below", "play_state": "completed", "applied": True}
+
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    row = conn.execute(
+        "SELECT play_state FROM catalog_games WHERE game_id = ?", (gid,)
+    ).fetchone()
+    conn.close()
+    assert row["play_state"] == "completed"
+
+
+def test_play_state_prefers_igdb_key(client):
+    """A matched game is keyed on its stable igdb_id, not its title."""
+    from mailroom.db import connect
+
+    gid = _make_game(igdb_id=383834)
+    res = client.post(
+        "/manual/game/play-state",
+        json={"igdb_id": 383834, "normalized_title": "below", "state": "played"},
+    )
+    assert res.status_code == 200
+    assert res.json()["game_key"] == "igdb:383834"
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    row = conn.execute(
+        "SELECT play_state FROM catalog_games WHERE game_id = ?", (gid,)
+    ).fetchone()
+    conn.close()
+    assert row["play_state"] == "played"
+
+
+def test_play_state_set_before_match_survives_later_match(client):
+    """State set while a game is unmatched (title key) stays visible after the
+    game is later matched (igdb key) — the view falls back to the title key."""
+    from mailroom.db import connect
+
+    gid = _make_game()  # unmatched
+    res = client.post("/manual/game/play-state", json={"game_id": gid, "state": "played"})
+    assert res.json()["game_key"] == "title:below"
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    conn.execute("UPDATE games SET igdb_id = 383834 WHERE id = ?", (gid,))
+    conn.commit()
+    row = conn.execute(
+        "SELECT play_state FROM catalog_games WHERE game_id = ?", (gid,)
+    ).fetchone()
+    conn.close()
+    assert row["play_state"] == "played"
+
+
+def test_play_state_changes_are_upserts(client):
+    """Setting again for the same game overwrites the prior state (one row)."""
+    from mailroom.db import connect
+
+    _make_game(igdb_id=1)
+    client.post("/manual/game/play-state", json={"igdb_id": 1, "state": "played"})
+    client.post("/manual/game/play-state", json={"igdb_id": 1, "state": "completed"})
+    conn = connect(os.environ["MAILROOM_DB_URL"])
+    rows = conn.execute("SELECT play_state FROM game_play_state").fetchall()
+    conn.close()
+    assert [r["play_state"] for r in rows] == ["completed"]
+
+
+def test_play_state_unknown_game_404_and_validation(client):
+    assert client.post("/manual/game/play-state", json={"game_id": 9999, "state": "played"}).status_code == 404
+    assert client.post("/manual/game/play-state", json={"state": "beaten", "igdb_id": 1}).status_code == 400
+    assert client.post("/manual/game/play-state", json={"state": "played"}).status_code == 400

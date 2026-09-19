@@ -12,6 +12,7 @@ Endpoints:
   POST /manual/igdb-match            -> {owned_game_id, igdb_id, note?} apply a match
   POST /manual/needs-match/exclude   -> {owned_game_id, reason?} retire a non-game from the catalog
   POST /manual/owned-game/rename      -> {owned_game_id, title, platform?} clean a raw listing title / override platform
+  POST /manual/game/play-state       -> {state, ...identity} set Played/Unplayed/Completed for a game
   GET  /manual/review-queue          -> open (or all) dedup/manual review flags
   POST /manual/review-queue/{id}/resolve -> {decision, note?} adjudicate a flag
   POST /manual/psn-credential        -> {npsso} exchange -> store refresh token + session
@@ -112,6 +113,19 @@ class RenameRequest(BaseModel):
     owned_game_id: int
     title: str
     platform: str | None = None
+
+
+class PlayStateRequest(BaseModel):
+    """Set a game's play state (the shelf's Played / Unplayed / Completed flag).
+
+    Identify the game by any of: `game_id` (a canonical games.id), `igdb_id`
+    (preferred stable key once matched), or `normalized_title` (the fallback
+    for a game with no IGDB match yet). `igdb_id` wins over `normalized_title`
+    when both are given."""
+    state: str  # 'played' | 'unplayed' | 'completed'
+    game_id: int | None = None
+    igdb_id: int | None = None
+    normalized_title: str | None = None
 
 
 def _conn():
@@ -531,6 +545,61 @@ def rename_owned_game(req: RenameRequest) -> dict:
         )
         conn.commit()
         return {"owned_game_id": req.owned_game_id, "title": title, "renamed": True}
+    finally:
+        conn.close()
+
+
+# Valid play states (the shelf's Played / Unplayed / Completed flag).
+PLAY_STATES = ("played", "unplayed", "completed")
+
+
+@app.post("/manual/game/play-state")
+def set_game_play_state(req: PlayStateRequest) -> dict:
+    """Set (or change) a game's play state: Played / Unplayed / Completed.
+
+    Stored in `game_play_state`, keyed by the game's stable identity —
+    'igdb:<igdb_id>' once matched, else 'title:<normalized_title>' — NOT on the
+    `games` row, which the catalog_games asset rebuilds (DELETE + INSERT) on
+    every materialization. catalog_games exposes it as `play_state`; pshelf
+    reads that from the read-only /data mount, and this endpoint is the only
+    write path (single-writer rule). The WAL is folded so the read-only
+    consumer sees the change immediately.
+    """
+    state = (req.state or "").strip().lower()
+    if state not in PLAY_STATES:
+        raise HTTPException(400, f"state must be one of {list(PLAY_STATES)}")
+    conn = _conn()
+    try:
+        igdb_id = req.igdb_id
+        normalized_title = (req.normalized_title or "").strip() or None
+        # Resolve identity from the canonical games row when given a game_id.
+        if req.game_id is not None:
+            row = conn.execute(
+                "SELECT igdb_id, normalized_title FROM games WHERE id = ?",
+                (req.game_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, f"no game with id {req.game_id}")
+            if igdb_id is None:
+                igdb_id = row["igdb_id"]
+            normalized_title = normalized_title or row["normalized_title"]
+        if igdb_id is not None:
+            key = f"igdb:{igdb_id}"
+        elif normalized_title:
+            key = f"title:{normalized_title}"
+        else:
+            raise HTTPException(400, "need game_id, igdb_id or normalized_title")
+        conn.execute(
+            """INSERT INTO game_play_state(game_key, play_state, updated_at)
+               VALUES (?, ?, datetime('now'))
+               ON CONFLICT(game_key) DO UPDATE SET
+                 play_state = excluded.play_state,
+                 updated_at = datetime('now')""",
+            (key, state),
+        )
+        conn.commit()
+        checkpoint_wal(conn)
+        return {"game_key": key, "play_state": state, "applied": True}
     finally:
         conn.close()
 
