@@ -15,7 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.1.1",
-    "ruff>=0.16.5",
+    "ruff>=0.16.8",
     "fastmcp>=4.0.2",  # catalog_mcp server tests (separate container at deploy)
 ]
 
