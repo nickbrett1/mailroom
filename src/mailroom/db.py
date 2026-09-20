@@ -252,6 +252,18 @@ SELECT
     g.order_number,
     g.psn_content_id,
     g.igdb_id,
+    -- IGDB canonical page (memos/igdb-page-link): the slug plus the full public
+    -- URL, both lifted from the raw IGDB payload. `url` is IGDB's own field;
+    -- fall back to building it from `slug` for payloads fetched before `url`
+    -- was requested. NULL when the game is unmatched — the UI hides the link.
+    json_extract(m.payload, '$.slug') AS igdb_slug,
+    COALESCE(
+        json_extract(m.payload, '$.url'),
+        CASE WHEN json_extract(m.payload, '$.slug') IS NOT NULL
+             THEN 'https://www.igdb.com/games/'
+                  || json_extract(m.payload, '$.slug')
+        END
+    ) AS igdb_url,
     g.acquisition_date,
     g.price,
     g.source,
@@ -312,6 +324,18 @@ SELECT
     g.title,
     g.normalized_title,
     g.igdb_id,
+    -- IGDB canonical page (memos/igdb-page-link): the slug plus the full public
+    -- URL, both lifted from the raw IGDB payload. `url` is IGDB's own field;
+    -- fall back to building it from `slug` for payloads fetched before `url`
+    -- was requested. NULL when the game is unmatched — the UI hides the link.
+    json_extract(m.payload, '$.slug') AS igdb_slug,
+    COALESCE(
+        json_extract(m.payload, '$.url'),
+        CASE WHEN json_extract(m.payload, '$.slug') IS NOT NULL
+             THEN 'https://www.igdb.com/games/'
+                  || json_extract(m.payload, '$.slug')
+        END
+    ) AS igdb_url,
     g.platform,
     g.platforms,
     g.formats,
