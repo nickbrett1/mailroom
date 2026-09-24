@@ -412,6 +412,7 @@ class PsnApiClient:
         access_token: str | None = None,
         access_token_expires_at: str | None = None,
         on_access_token: Any = None,
+        on_refresh_token: Any = None,
     ):
         self.refresh_token = refresh_token
         self.client_secret = client_secret
@@ -422,6 +423,11 @@ class PsnApiClient:
         # Optional hook(token, expires_at) persisting a freshly minted access
         # token; best-effort — a write failure must never break a sync.
         self._on_access_token = on_access_token
+        # Optional hook(refresh_token) persisting a rotated refresh token. Sony
+        # usually returns the same token, but if it ever rotates one the stored
+        # copy must follow or the next run 400s with invalid_grant. Defensive:
+        # also best-effort, never allowed to break a sync.
+        self._on_refresh_token = on_refresh_token
         headers = {"Accept": "application/json", "Accept-Language": "en-US"}
         self._client = client or httpx.Client(timeout=timeout, headers=headers)
 
@@ -450,6 +456,15 @@ class PsnApiClient:
             self._on_access_token(token, self._cached_access_token_expires_at)
         except Exception as exc:  # noqa: BLE001 — persistence is best-effort
             _log.warning("PSN: could not persist the fresh access token: %s", exc)
+
+    def _remember_refresh_token(self, token: str) -> None:
+        self.refresh_token = token
+        if self._on_refresh_token is None:
+            return
+        try:
+            self._on_refresh_token(token)
+        except Exception as exc:  # noqa: BLE001 — persistence is best-effort
+            _log.warning("PSN: could not persist the rotated refresh token: %s", exc)
 
     def _access_token(self) -> str:
         """A usable Bearer token, exchanging the refresh token only when the
@@ -493,6 +508,11 @@ class PsnApiClient:
         if not token:
             raise PsnAuthError("PSN token response missing access_token")
         self._remember_access_token(token, data.get("expires_in"))
+        # Rotation is rare (the PS-App refresh response usually echoes the same
+        # token), so only act when Sony actually hands back a new one.
+        new_refresh = data.get("refresh_token")
+        if new_refresh:
+            self._remember_refresh_token(new_refresh)
         return token
 
     def _post_token(self, url: str) -> httpx.Response:
@@ -934,9 +954,21 @@ def psn_api_resource(context) -> PsnApiClient:  # type: ignore[no-untyped-def]
         finally:
             c.close()
 
+    def _persist_refresh_token(token: str) -> None:
+        # Only the token rotates; leave status/last_error alone so a defensive
+        # write can never mask or clear the credential's real state.
+        c = connect(db_url)
+        try:
+            set_credential(
+                c, "psn", token=token, token_type="refresh_token",
+            )
+        finally:
+            c.close()
+
     return PsnApiClient(
         refresh_token=cred.get("token"),
         access_token=access.get("token"),
         access_token_expires_at=access.get("expires_at"),
         on_access_token=_persist_access_token,
+        on_refresh_token=_persist_refresh_token,
     )

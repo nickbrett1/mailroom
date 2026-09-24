@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -628,7 +629,8 @@ def psn_credential(req: PsnCredentialRequest) -> dict:
     if not refresh:
         raise HTTPException(400, "exchange succeeded but no refresh token returned")
     conn = _conn()
-    set_credential(conn, "psn", token=refresh, token_type="refresh_token", status="valid", last_error=_CLEAR)
+    set_credential(conn, "psn", token=refresh, token_type="refresh_token", status="valid", last_error=_CLEAR,
+                   last_success=datetime.now(UTC).isoformat(timespec="seconds"))
     # Fresh code-exchanged access token — the refresh-derived Bearer 403s on
     # the gameList playtime endpoint; the code exchange may carry full scope.
     access = tokens.get("access_token")

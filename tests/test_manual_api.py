@@ -309,6 +309,8 @@ def test_psn_credential_status_and_refresh(client, monkeypatch):
     assert cred["token"] == "rt-new-1234567890"
     # A successful refresh clears the previous error (was stuck via COALESCE).
     assert cred["last_error"] is None
+    # ...and stamps last_success so the UI shows the refresh, not the last sync.
+    assert cred["last_success"] is not None
     conn.close()
 
 

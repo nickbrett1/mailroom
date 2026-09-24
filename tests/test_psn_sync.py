@@ -729,6 +729,46 @@ def test_fresh_access_token_is_handed_to_the_persist_hook():
     assert persisted[0][1] and persisted[0][1].endswith("Z")
 
 
+def test_rotated_refresh_token_is_persisted():
+    """If Sony hands back a NEW refresh_token, remember it in memory and hand it
+    to the persist hook (defensive against rotation -> stale stored token)."""
+    persisted: list[str] = []
+    rotated = {"access_token": "jwt-token-123", "refresh_token": "rt-rotated", "expires_in": 3600}
+    transport = httpx.MockTransport(
+        lambda r: httpx.Response(200, json=rotated)
+        if "oauth/token" in r.url.path
+        else httpx.Response(200, json={"entitlements": [], "totalResults": 0})
+    )
+    client = PsnApiClient(
+        refresh_token="rt-123",
+        client_secret="test-secret",
+        client=httpx.Client(transport=transport),
+        on_refresh_token=persisted.append,
+    )
+    client.library_titles()
+    assert persisted == ["rt-rotated"]
+    assert client.refresh_token == "rt-rotated"
+
+
+def test_unchanged_refresh_token_is_not_persisted():
+    """No `refresh_token` in the response => nothing changes (the common case)."""
+    persisted: list[str] = []
+    transport = httpx.MockTransport(
+        lambda r: httpx.Response(200, json=REFRESH_BODY)
+        if "oauth/token" in r.url.path
+        else httpx.Response(200, json={"entitlements": [], "totalResults": 0})
+    )
+    client = PsnApiClient(
+        refresh_token="rt-123",
+        client_secret="test-secret",
+        client=httpx.Client(transport=transport),
+        on_refresh_token=persisted.append,
+    )
+    client.library_titles()
+    assert persisted == []
+    assert client.refresh_token == "rt-123"
+
+
 def test_cached_access_token_skips_the_exchange():
     def handler(request: httpx.Request) -> httpx.Response:
         if "oauth/token" in request.url.path:
