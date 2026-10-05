@@ -297,6 +297,34 @@ class IgdbClient:
         )
         return rows[0] if rows else {}
 
+    def game_time_to_beats(self, game_ids: list[int]) -> dict[int, dict[str, int]]:
+        """Batched time-to-beat lookup, ≤500 ids per call.
+
+        The `games` endpoint exposes no time-to-beat field, so this is a
+        separate `/v4/game_time_to_beats` call, made once per enrichment run.
+        Returns {game_id: {"hastily": <s>, "normally": <s>,
+        "completely": <s>}} for the games IGDB has data for; a game with no
+        TTB row is simply absent, so the caller stores NULL for it.
+        """
+        out: dict[int, dict[str, int]] = {}
+        for i in range(0, len(game_ids), 500):
+            batch = game_ids[i : i + 500]
+            rows = self._apicalypse(
+                "game_time_to_beats",
+                "fields game_id,hastily,normally,completely; "
+                f"where game_id = ({','.join(str(g) for g in batch)}); limit 500;",
+            )
+            for row in rows:
+                gid = row.get("game_id")
+                if gid is None:
+                    continue
+                out[gid] = {
+                    "hastily": row.get("hastily"),
+                    "normally": row.get("normally"),
+                    "completely": row.get("completely"),
+                }
+        return out
+
     def fetch_image(self, url: str) -> bytes | None:
         """Fetch an image (e.g. an IGDB cover) and return its bytes.
 

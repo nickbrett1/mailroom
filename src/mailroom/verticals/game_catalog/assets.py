@@ -1602,27 +1602,39 @@ def game_metadata(context: AssetExecutionContext) -> None:
     catalog_views can expose `is_psvr2` (memos/game-catalog-platforms).
     Payloads fetched before `platforms` was in the field list are refetched
     once so the backfill + flag apply to pre-existing matched rows too.
+
+    Also fetches IGDB time-to-beat (one batched call per run, since `games`
+    carries no time_to_beat field) and stores it under `time_to_beat`; the key
+    is ALWAYS set (null when IGDB has no data), and its presence is the
+    "already attempted" sentinel the backfill predicate below relies on.
     """
     conn = connect(context.resources.db_url)
     init_db(conn)
     igdb = context.resources.igdb
     # Include ids whose stored payload lacks a platforms array (never fetched,
     # or fetched before `platforms` was requested) so the platform backfill and
-    # PSVR2 flag cover rows matched before this change.
+    # PSVR2 flag cover rows matched before this change; likewise ids whose
+    # payload has no time_to_beat key yet (matched before the TTB change), so
+    # already-matched games refetch exactly once.
     rows = conn.execute(
         """SELECT DISTINCT g.igdb_id FROM owned_games g
            WHERE g.igdb_id IS NOT NULL
              AND g.igdb_id NOT IN (
                  SELECT m.igdb_id FROM game_metadata m
                  WHERE json_valid(m.payload)
-                   AND json_type(m.payload, '$.platforms') = 'array')"""
+                   AND json_type(m.payload, '$.platforms') = 'array'
+                   AND json_type(m.payload, '$.time_to_beat') IS NOT NULL)"""
     ).fetchall()
+    # One batched time-to-beat fetch for the whole run. Games IGDB has no TTB
+    # for are absent from the map and stored as null.
+    tbt = igdb.game_time_to_beats([r["igdb_id"] for r in rows])
     fetched = 0
     for r in rows:
         gid = r["igdb_id"]
         payload = igdb.game_details(gid)
         if not payload:
             continue
+        payload["time_to_beat"] = tbt.get(gid)
         conn.execute(
             "INSERT OR REPLACE INTO game_metadata(igdb_id, payload) VALUES (?, ?)",
             (gid, json.dumps(payload)),
