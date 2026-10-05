@@ -14,10 +14,17 @@ from mailroom.verticals.game_catalog import assets
 
 
 class _StubIgdb:
-    def __init__(self, external: dict | None = None, search: dict | None = None, details: dict | None = None):
+    def __init__(
+        self,
+        external: dict | None = None,
+        search: dict | None = None,
+        details: dict | None = None,
+        time_to_beat: dict | None = None,
+    ):
         self.external = external or {}
         self.search = search or {}
         self.details = details or {}
+        self.time_to_beat = time_to_beat or {}
 
     def game_by_external_psn_uid(self, uid: str) -> int | None:
         return self.external.get(uid)
@@ -30,6 +37,9 @@ class _StubIgdb:
 
     def game_details(self, game_id: int) -> dict:
         return self.details.get(game_id, {})
+
+    def game_time_to_beats(self, game_ids: list[int]) -> dict[int, dict]:
+        return {gid: self.time_to_beat[gid] for gid in game_ids if gid in self.time_to_beat}
 
 
 def _seed_game(conn, title, platform="playstation 5", psn_content_id=None, igdb_id=None, source="psn_receipt", ownership_class="purchased"):
@@ -281,6 +291,48 @@ def test_game_metadata_paced_resumable_and_catalog_view():
     row = conn.execute("SELECT game_id, title, igdb_id, igdb_payload FROM catalog_views WHERE title = 'God of War'").fetchone()
     assert row is not None
     assert row["igdb_payload"] is not None
+    conn.close()
+
+
+def test_game_metadata_surfaces_time_to_beat_on_both_views():
+    """The batched TTB fetch stores seconds under the payload's `time_to_beat`
+    key and both read models expose all three columns; a game IGDB has no data
+    for gets NULL (the key is still present, marking the attempt)."""
+    db = tempfile.mktemp(suffix=".db")
+    conn = connect(f"sqlite:///{db}")
+    init_db(conn)
+    _seed_game(conn, "God of War", igdb_id=1942)
+    _seed_game(conn, "Obscure Game", igdb_id=4242)
+    conn.close()
+
+    stub = _StubIgdb(
+        details={1942: {"id": 1942, "name": "God of War"},
+                 4242: {"id": 4242, "name": "Obscure Game"}},
+        time_to_beat={1942: {"hastily": 25200, "normally": 72000, "completely": 180000}},
+    )
+    assets.game_metadata(_ctx(f"sqlite:///{db}", stub))
+    assets.catalog_views(_ctx(f"sqlite:///{db}", stub))
+    # catalog_games reads the canonical `games` table, built from owned_games.
+    assets.catalog_games(build_op_context(resources={"db_url": f"sqlite:///{db}"}))
+
+    conn = connect(f"sqlite:///{db}")
+    for view in ("catalog_views", "catalog_games"):
+        row = conn.execute(
+            f"SELECT time_to_beat_hastily, time_to_beat_normally, "
+            f"time_to_beat_completely FROM {view} WHERE igdb_id = 1942"
+        ).fetchone()
+        assert row is not None, f"{view} must expose the matched game"
+        assert row["time_to_beat_normally"] == 72000, f"{view} must surface seconds"
+        assert row["time_to_beat_hastily"] == 25200
+        assert row["time_to_beat_completely"] == 180000
+        # no TTB data for 4242 -> NULL, but the key is present (attempted)
+        row = conn.execute(
+            f"SELECT time_to_beat_normally FROM {view} WHERE igdb_id = 4242"
+        ).fetchone()
+        assert row["time_to_beat_normally"] is None
+    assert json.loads(
+        conn.execute("SELECT payload FROM game_metadata WHERE igdb_id = 4242").fetchone()["payload"]
+    )["time_to_beat"] is None
     conn.close()
 
 

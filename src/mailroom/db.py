@@ -273,6 +273,11 @@ SELECT
     CAST(json_extract(m.payload, '$.total_rating') AS REAL) AS rating,
     CAST(json_extract(m.payload, '$.aggregated_rating') AS REAL) AS aggregated_rating,
     CAST(json_extract(m.payload, '$.first_release_date') AS INTEGER) AS release_ts,
+    -- IGDB time-to-beat in SECONDS (hastily/normally/completely); NULL when
+    -- IGDB has no data. Set by the game_metadata asset's batched fetch.
+    CAST(json_extract(m.payload, '$.time_to_beat.hastily') AS INTEGER) AS time_to_beat_hastily,
+    CAST(json_extract(m.payload, '$.time_to_beat.normally') AS INTEGER) AS time_to_beat_normally,
+    CAST(json_extract(m.payload, '$.time_to_beat.completely') AS INTEGER) AS time_to_beat_completely,
     json_extract(m.payload, '$.cover.url') AS cover_url,
     -- Local cover path once cached (game_covers); NULL until the cover asset
     -- fetches it. pshelf serves this as a static file from its /data mount
@@ -362,6 +367,11 @@ SELECT
     CAST(json_extract(m.payload, '$.total_rating') AS REAL) AS rating,
     CAST(json_extract(m.payload, '$.aggregated_rating') AS REAL) AS aggregated_rating,
     CAST(json_extract(m.payload, '$.first_release_date') AS INTEGER) AS release_ts,
+    -- IGDB time-to-beat in SECONDS (hastily/normally/completely); NULL when
+    -- IGDB has no data. Set by the game_metadata asset's batched fetch.
+    CAST(json_extract(m.payload, '$.time_to_beat.hastily') AS INTEGER) AS time_to_beat_hastily,
+    CAST(json_extract(m.payload, '$.time_to_beat.normally') AS INTEGER) AS time_to_beat_normally,
+    CAST(json_extract(m.payload, '$.time_to_beat.completely') AS INTEGER) AS time_to_beat_completely,
     json_extract(m.payload, '$.cover.url') AS cover_url,
     c.local_path AS cover_local,
     (SELECT group_concat(json_extract(j.value, '$.name'), ', ')
